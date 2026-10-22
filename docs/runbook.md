@@ -126,6 +126,26 @@ The phone should show a notification from `office`.
 bin/check-neighbors.sh | diff var/neighbors-before.txt - && echo unchanged
 ```
 
+## 8. Turn on the bot (Phase 2)
+
+Needs the workers' token (`OFFICE_GITHUB_TOKEN` in `.env`: fine-grained,
+`unlaunched`, all repositories, repository creation plus Contents, Pull
+requests, Issues and Workflows read and write).
+
+```sh
+cd ~/web/office
+git pull
+bin/bootstrap.sh vps                     # nothing left to fill in
+docker compose up -d --build office
+docker compose logs office | grep -E 'logged in|ERROR'   # "logged in as @office..."
+```
+
+In Element X, accept the invites to **office inbox** and **office status**,
+then dictate a small idea into the inbox. Each project gets its own room; accept
+that invite too. Progress also shows at https://office.unlaunched.dev.
+
+To stop all work without stopping the bot, send `!pause` in the inbox.
+
 ## Rollback
 
 The edge discovers office through container labels, so stopping office's
