@@ -23,6 +23,7 @@ class Workspace(Protocol):
     async def sync_main(self, slug: str) -> None: ...
     async def open_issue(self, slug: str, title: str, body: str) -> int | None: ...
     async def repo_exists(self, slug: str) -> bool: ...
+    async def move_repo(self, old: str, new: str, description: str) -> Path: ...
 
 
 async def run(*args: str, cwd: Path | None = None) -> tuple[int, str]:
@@ -57,6 +58,29 @@ class GitHubWorkspace:
             if code != 0:
                 raise WorkspaceError(f"cloning {repo}: {out[-300:]}")
         return path
+
+    async def move_repo(self, old: str, new: str, description: str) -> Path:
+        """Copy every branch and tag of `old` into a new repo `new` and point the checkout at it.
+        The old repo stays (deleting needs admin rights the token doesn't have)."""
+        path = await self.ensure_repo(old, description)
+        code, out = await run("git", "fetch", "--quiet", "--prune", "--tags", "origin", cwd=path)
+        if code != 0:
+            raise WorkspaceError(f"fetching {old}: {out[-300:]}")
+        await run("git", "remote", "set-head", "origin", "--delete", cwd=path)
+        repo = f"{self.org}/{new}"
+        code, out = await run("gh", "repo", "create", repo, "--private", "--description", description[:350])
+        if code != 0:
+            raise WorkspaceError(f"creating {repo}: {out[-300:]}")
+        url = f"https://github.com/{repo}.git"
+        for refspec in ("refs/remotes/origin/*:refs/heads/*", "refs/tags/*:refs/tags/*"):
+            code, out = await run("git", "push", "--quiet", url, refspec, cwd=path)
+            if code != 0 and "src refspec" not in out:  # no tags is fine
+                raise WorkspaceError(f"pushing to {repo}: {out[-300:]}")
+        await run("git", "remote", "set-url", "origin", url, cwd=path)
+        await run("gh", "repo", "edit", repo, "--default-branch", "main")
+        target = self.path(new)
+        path.rename(target)
+        return target
 
     async def sync_main(self, slug: str) -> None:
         """Start a job from the latest main. Best effort: an empty repo or local changes leave it alone."""
@@ -103,6 +127,15 @@ class LocalWorkspace:
         path = self.path(slug)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    async def move_repo(self, old: str, new: str, description: str) -> Path:
+        self.repos.add(new)
+        target = self.path(new)
+        if self.path(old).exists():
+            self.path(old).rename(target)
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+        return target
 
     async def sync_main(self, slug: str) -> None:
         pass

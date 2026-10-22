@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .store import EFFORTS, MODELS, MODES
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -21,6 +23,10 @@ class Settings:
     state_dir: Path  # SQLite, run logs, lessons.md
     workspace_dir: Path  # one checkout per project
     process_dir: Path  # playbooks, skills and prompts, read-only
+    # What a new project gets unless the dictation or a command says otherwise.
+    default_mode: str = "standard"
+    default_model: str = "opus"
+    default_effort: str = "high"
 
     @classmethod
     def from_env(cls, env: dict[str, str] = os.environ) -> Settings:
@@ -28,6 +34,11 @@ class Settings:
         harness = env.get("HARNESS", "claude")
         if harness not in ("claude", "fake"):
             raise SystemExit("HARNESS must be claude or fake")
+        defaults = {
+            "default_mode": _choice(env, "OFFICE_DEFAULT_MODE", "standard", MODES),
+            "default_model": _choice(env, "OFFICE_MODEL", "opus", MODELS),
+            "default_effort": _choice(env, "OFFICE_EFFORT", "high", EFFORTS),
+        }
         password = env.get("OFFICE_MATRIX_PASSWORD", "")
         if not password:
             raise SystemExit("OFFICE_MATRIX_PASSWORD must be set")
@@ -44,6 +55,7 @@ class Settings:
             state_dir=Path(env.get("OFFICE_STATE_DIR", "/var/lib/office")),
             workspace_dir=Path(env.get("OFFICE_WORKSPACE_DIR", "/workspace")),
             process_dir=Path(env.get("OFFICE_PROCESS_DIR", "/opt/office")),
+            **defaults,
         )
 
     def url(self, host: str) -> str:
@@ -58,3 +70,10 @@ class Settings:
 
     def repo_url(self, slug: str) -> str:
         return f"https://github.com/{self.org}/{slug}"
+
+
+def _choice(env: dict[str, str], name: str, default: str, allowed: tuple[str, ...]) -> str:
+    value = env.get(name) or default
+    if value not in allowed:
+        raise SystemExit(f"{name} must be one of {', '.join(allowed)}")
+    return value

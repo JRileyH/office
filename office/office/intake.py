@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .harness import Harness
+from .store import EFFORTS, MODELS, MODES
 
 log = logging.getLogger(__name__)
 
@@ -22,8 +23,11 @@ SCHEMA = {
         "name": {"type": "string", "description": "Short product name, 1 to 4 words"},
         "slug": {"type": "string", "description": "Subdomain: lowercase letters, digits and hyphens, 2 to 31 chars"},
         "summary": {"type": "string", "description": "One to three sentences: what it is and who it's for"},
+        "mode": {"enum": [*MODES, "unspecified"]},
+        "model": {"enum": [*MODELS, "unspecified"]},
+        "effort": {"enum": [*EFFORTS, "unspecified"]},
     },
-    "required": ["name", "slug", "summary"],
+    "required": ["name", "slug", "summary", "mode", "model", "effort"],
     "additionalProperties": False,
 }
 
@@ -33,6 +37,10 @@ class Brief:
     name: str
     slug: str
     summary: str
+    # Only what the dictation asked for; None means use the default.
+    mode: str | None = None
+    model: str | None = None
+    effort: str | None = None
 
 
 def slugify(text: str) -> str:
@@ -78,7 +86,18 @@ async def triage(harness: Harness, prompt_path: Path, text: str, cwd: Path, log_
     slug = str(v.get("slug") or "").strip().lower()
     if not valid_slug(slug):
         slug = slugify(slug or name)
-    return Brief(name, slug, str(v.get("summary") or text).strip()[:1000])
+    return Brief(
+        name,
+        slug,
+        str(v.get("summary") or text).strip()[:1000],
+        mode=_pick(v.get("mode"), MODES),
+        model=_pick(v.get("model"), MODELS),
+        effort=_pick(v.get("effort"), EFFORTS),
+    )
+
+
+def _pick(value: object, allowed: tuple[str, ...]) -> str | None:
+    return value if value in allowed else None
 
 
 async def unique_slug(slug: str, taken: Callable[[str], Awaitable[bool]]) -> str:

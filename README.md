@@ -21,9 +21,19 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
     score works, count streaks instead"): it says when it starts, and again when
     it's live or if it needs an answer.
 - **office status:** usage-limit notices and finished jobs.
-- **Commands,** in any room (in a project room they apply to that project):
-  `!help`, `!queue`, `!status [project]`, `!pause [project]`,
-  `!resume [project]`, `!kill [job]`.
+- **Settings,** per project, shown when it's created (work starts a minute later,
+  so there's time to change them). Say them while dictating ("…called Leaf
+  Peeper, rigorous, opus, max effort") or change them later in the room:
+  - `!mode reckless|standard|rigorous`: one quick pass; spec, MVP check-in,
+    review; or a reviewed spec, thorough tests and two reviews.
+  - `!model fable|opus|sonnet|haiku` and `!effort low|medium|high|xhigh|max`:
+    take effect from the next phase.
+
+  Defaults are `OFFICE_DEFAULT_MODE`, `OFFICE_MODEL` and `OFFICE_EFFORT` in `.env`.
+- **Commands,** in any room (in a project room they apply to that project;
+  elsewhere put its slug first): `!help`, `!queue`, `!status`, `!mode`,
+  `!model`, `!effort`, `!rename <name>`, `!slug <new-slug>` (moves the repo and
+  address; the old repo stays for you to delete), `!pause`, `!resume`, `!kill`.
 - **Status page:** https://office.unlaunched.dev lists projects, jobs and runs.
 
 ## Local mode

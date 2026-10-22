@@ -56,6 +56,9 @@ class Chat(Protocol):
     async def send(self, room_id: str, text: str, notice: bool = False) -> str: ...
     async def typing(self, room_id: str, on: bool) -> None: ...
     async def create_room(self, name: str, topic: str, alias: str | None = None) -> str: ...
+    async def set_name(self, room_id: str, name: str) -> None: ...
+    async def set_topic(self, room_id: str, topic: str) -> None: ...
+    async def add_alias(self, room_id: str, alias: str) -> None: ...
 
 
 class Matrix:
@@ -138,6 +141,17 @@ class Matrix:
 
     async def set_topic(self, room_id: str, topic: str) -> None:
         await self._call("PUT", f"/_matrix/client/v3/rooms/{quote(room_id)}/state/m.room.topic", json={"topic": topic})
+
+    async def set_name(self, room_id: str, name: str) -> None:
+        await self._call("PUT", f"/_matrix/client/v3/rooms/{quote(room_id)}/state/m.room.name", json={"name": name})
+
+    async def add_alias(self, room_id: str, alias: str) -> None:
+        """`#<alias>:<server>` for the room. Best effort: the room works without it."""
+        server = self.user.split(":", 1)[1]
+        try:
+            await self._call("PUT", f"/_matrix/client/v3/directory/room/{quote(f'#{alias}:{server}')}", json={"room_id": room_id})
+        except MatrixError as e:
+            log.warning("alias %s: %s", alias, e)
 
     async def join(self, room_id: str) -> None:
         await self._call("POST", f"/_matrix/client/v3/join/{quote(room_id)}", json={})

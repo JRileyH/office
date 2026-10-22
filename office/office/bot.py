@@ -11,31 +11,43 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import timedelta
 
 from . import intake
 from .config import Settings
 from .harness import Harness
+from .deployer_client import Deployer
 from .matrix import Chat, Message
 from .prompts import Prompts
 from .scheduler import Scheduler
-from .store import ACTIVE, Job, Project, Store
-from .workspace import Workspace
+from .store import ACTIVE, EFFORTS, MODELS, MODES, Job, Project, Store, later
+from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
 
-HELP = """Commands (in a project's room they apply to that project):
+HELP = """Commands (in a project's room they apply to that project; elsewhere, put the project's slug first):
 !queue — what's queued, running and waiting
-!status [project] — a project's state and links
-!pause [project] / !resume [project] — hold a project while you tinker; with no project in the inbox, all work
+!status [project] — a project's state, settings and links
+!mode reckless|standard|rigorous — how carefully it's built
+!model fable|opus|sonnet|haiku — which Claude model the workers use
+!effort low|medium|high|xhigh|max — how hard they think
+!rename <name> — change the project's name
+!slug <new-slug> — move it to a new address and repo
+!pause / !resume — hold a project while you tinker; with no project in the inbox, all work
 !kill [job] — drop a job
 
+In the inbox you can also say the settings when you dictate ("rigorous, opus, max effort").
 Anything else: in the inbox, a new idea; in a project's room, feedback or a change."""
 
 STARTING = "Starting now."
 INBOX_WELCOME = """This is office's inbox. Dictate an idea here and I'll turn it into a project with its own room, where I'll post check-ins and you can ask for changes. !help lists commands."""
+SETTINGS = {"mode": MODES, "model": MODELS, "effort": EFFORTS}
 
 
 class Bot:
+    # New projects wait this long before work starts, so Riggy can change their settings.
+    start_delay = timedelta(minutes=1)
+
     def __init__(
         self,
         settings: Settings,
@@ -45,6 +57,7 @@ class Bot:
         harness: Harness,
         workspace: Workspace,
         prompts: Prompts,
+        deployer: Deployer | None = None,
     ):
         self.settings = settings
         self.store = store
@@ -53,6 +66,7 @@ class Bot:
         self.harness = harness
         self.workspace = workspace
         self.prompts = prompts
+        self.deployer = deployer
 
     async def ensure_rooms(self) -> None:
         """The inbox and status rooms, created once and remembered."""
@@ -85,16 +99,21 @@ class Bot:
         await self.chat.typing(msg.room_id, True)
         try:
             brief = await self.triage(msg.body)
-
-            async def taken(slug: str) -> bool:
-                return self.store.project(slug) is not None or await self.workspace.repo_exists(slug)
-
-            slug = await intake.unique_slug(brief.slug, taken)
-            project = self.store.add_project(slug, brief.name, brief.summary)
+            slug = await intake.unique_slug(brief.slug, self.slug_taken)
+            mode = brief.mode or self.settings.default_mode
+            project = self.store.add_project(
+                slug,
+                brief.name,
+                brief.summary,
+                mode=mode,
+                model=brief.model or self.settings.default_model,
+                effort=brief.effort or self.settings.default_effort,
+            )
             url, repo = self.settings.project_url(slug), self.settings.repo_url(slug)
             room = await self.chat.create_room(brief.name, f"{url} · {repo}", alias=slug)
             self.store.set_room(slug, room)
-            job = self.store.add_job(slug, "new", msg.body, "standard")
+            job = self.store.add_job(slug, "new", msg.body, mode)
+            self.store.update_job(job.id, state="parked", retry_at=later(self.start_delay))
         finally:
             await self.chat.typing(msg.room_id, False)
 
@@ -102,14 +121,19 @@ class Bot:
             room,
             f"{brief.name}\n\n{brief.summary}\n\nYou said: “{msg.body}”\n\n"
             f"It'll live at {url} (code: {repo}). I'll post progress here and check in when there's "
-            "an MVP worth looking at. Reply here any time with feedback or changes.",
+            "an MVP worth looking at. Reply here any time with feedback or changes.\n\n"
+            f"{settings_line(project)}. Starting in a minute: to change that first, say "
+            "!mode, !model or !effort here (!help for the options).",
         )
         await self.chat.send(
             msg.room_id,
-            f"New project: {brief.name} ({slug}). {self.queue_position(job)} "
+            f"New project: {brief.name} ({slug}), {settings_line(project).lower()}. "
             f"I've invited you to its room: https://matrix.to/#/{room}",
         )
         self.scheduler.wake()
+
+    async def slug_taken(self, slug: str) -> bool:
+        return self.store.project(slug) is not None or await self.workspace.repo_exists(slug)
 
     async def triage(self, text: str) -> intake.Brief:
         if self.settings.harness == "fake":
@@ -196,6 +220,21 @@ class Bot:
                 if not self.scheduler.kill(job.id):
                     return f"Job {job.id} has already finished."
                 return f"Killed job {job.id} ({self.store.project(job.slug).name})."
+            case "mode" | "model" | "effort":
+                return self.set_setting(name, args, here)
+            case "rename":
+                project, words = (here, args) if here else (self.pick_project(args[:1], None), args[1:])
+                if not project or not words:
+                    return "Usage: !rename <new name> in the project's room, or !rename <slug> <new name>."
+                new = " ".join(words)[:60]
+                self.store.update_project(project.slug, name=new)
+                await self.chat.set_name(project.room_id, new)
+                return f"Renamed {project.name} to {new}. The address stays {project.slug}; !slug changes that."
+            case "slug" | "move":
+                project, rest = (here, args) if here else (self.pick_project(args[:1], None), args[1:])
+                if not project or len(rest) != 1:
+                    return "Usage: !slug <new-slug> in the project's room, or !slug <old-slug> <new-slug>."
+                return await self.move(project, rest[0].lower())
             case _:
                 return f"Unknown command !{name}.\n\n{HELP}"
 
@@ -219,12 +258,83 @@ class Bot:
         phase = book.phases[job.phase].name if job.phase < len(book.phases) else "finished"
         what = "new project" if job.kind == "new" else "change"
         held = " (project paused)" if project.paused else ""
-        return f"#{job.id} {project.name}: {what}, {job.state}, {phase}{held}"
+        state = job.state
+        if state == "parked":  # a grace period before a new project starts, or a retry after a limit or error
+            state = "retrying soon" if self.store.runs(job.id) else "starting shortly"
+        return f"#{job.id} {project.name}: {what}, {state}, {phase}{held}"
 
     def status_text(self, project: Project) -> str:
         job = self.store.active_job(project.slug)
         state = self.job_line(job) if job else "Idle."
         return (
-            f"{project.name} ({project.slug})\n{state}\n"
+            f"{project.name} ({project.slug})\n{settings_line(project)}\n{state}\n"
             f"{self.settings.project_url(project.slug)}\n{self.settings.repo_url(project.slug)}"
         )
+
+    # --- settings -------------------------------------------------------------
+
+    def set_setting(self, setting: str, args: list[str], here: Project | None) -> str:
+        allowed = SETTINGS[setting]
+        project, rest = (here, args) if here and len(args) == 1 else (self.pick_project(args[:1], None), args[1:])
+        if not project or len(rest) != 1 or rest[0].lower() not in allowed:
+            where = "" if here else " <project>"
+            return f"Usage: !{setting}{where} {'|'.join(allowed)}"
+        value = rest[0].lower()
+        project = self.store.update_project(project.slug, **{setting: value})
+        reply = f"{project.name}: {settings_line(project).lower()}."
+        job = self.store.active_job(project.slug)
+        if setting == "mode" and job and job.kind == "new" and job.playbook != value:
+            if self.store.runs(job.id):
+                reply += f" The job already under way keeps the {job.playbook} playbook; later changes use {value} rules."
+            else:
+                self.store.update_job(job.id, playbook=value)
+                reply += f" The new-project job will follow the {value} playbook."
+        elif setting != "mode" and job:
+            reply += " Takes effect from the next phase."
+        return reply
+
+    async def move(self, project: Project, new: str) -> str:
+        """A new slug means a new address and a new repo: office moves the code, a job fixes the references."""
+        old = project.slug
+        if new == old:
+            return f"{project.name} is already at {old}."
+        if not intake.valid_slug(new):
+            return f"{new} won't work as an address: 2 to 31 lowercase letters, digits and hyphens, not reserved."
+        if await self.slug_taken(new):
+            return f"{new} is taken (by a project or an existing repo)."
+        job = self.store.active_job(old)
+        if job and job.state == "running":
+            return "A phase is running. Try again when it finishes, or !pause the project first."
+        try:
+            await self.workspace.move_repo(old, new, project.summary)
+        except WorkspaceError as e:
+            return f"Couldn't move the repo: {e}"
+        if self.deployer:
+            await self.deployer.stop(old)
+        project = self.store.move_project(old, new)
+        url, repo = self.settings.project_url(new), self.settings.repo_url(new)
+        await self.chat.set_topic(project.room_id, f"{url} · {repo}")
+        await self.chat.add_alias(project.room_id, new)
+
+        request = (
+            f"This project moved from `{old}` to `{new}`. The code is now in {repo} (pushed by office, with "
+            f"the full history) and it will live at {url}. Update every reference to the old slug (the image "
+            f"in deploy/compose.yml, README, AGENTS.md, docs, code), wait for CI on main, deploy, and check "
+            f"the new URL works. The old site has been stopped."
+        )
+        if job:
+            self.store.add_note(job.id, request)
+            follow = "The current job will update the references and redeploy."
+        else:
+            self.store.add_job(new, "change", request, "feature")
+            self.scheduler.wake()
+            follow = "A job is updating the references and will redeploy."
+        return (
+            f"Moved {project.name} to {new}: {repo}, soon live at {url}. {follow} "
+            f"The old repo {self.settings.repo_url(old)} is still there; delete it on GitHub when you like "
+            "(my token can't)."
+        )
+
+
+def settings_line(project: Project) -> str:
+    return f"Mode {project.mode}, model {project.model}, {project.effort} effort"

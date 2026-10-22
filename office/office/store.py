@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 SCHEMA = """
@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS projects (
     name TEXT NOT NULL,
     summary TEXT NOT NULL,
     mode TEXT NOT NULL DEFAULT 'standard',
+    model TEXT NOT NULL DEFAULT 'opus',
+    effort TEXT NOT NULL DEFAULT 'high',
     room_id TEXT UNIQUE,
     paused INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
@@ -64,12 +66,27 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
+# Columns added after the first release, added to older databases on open.
+MIGRATIONS = {
+    "projects": {
+        "model": "TEXT NOT NULL DEFAULT 'opus'",
+        "effort": "TEXT NOT NULL DEFAULT 'high'",
+    },
+}
+
 # Jobs in these states hold or want the worker slot, or wait on Riggy; anything else is finished.
 ACTIVE = ("queued", "running", "waiting", "parked")
+MODES = ("reckless", "standard", "rigorous")
+MODELS = ("fable", "opus", "sonnet", "haiku")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def later(delta: timedelta) -> str:
+    return (datetime.now(UTC) + delta).isoformat(timespec="seconds")
 
 
 @dataclass
@@ -78,6 +95,8 @@ class Project:
     name: str
     summary: str
     mode: str
+    model: str
+    effort: str
     room_id: str | None
     paused: bool
     created_at: str
@@ -108,6 +127,11 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        for table, columns in MIGRATIONS.items():
+            have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for column, decl in columns.items():
+                if column not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     # --- kv -------------------------------------------------------------------
 
@@ -123,10 +147,12 @@ class Store:
 
     # --- projects -------------------------------------------------------------
 
-    def add_project(self, slug: str, name: str, summary: str, mode: str = "standard") -> Project:
+    def add_project(
+        self, slug: str, name: str, summary: str, mode: str = "standard", model: str = "opus", effort: str = "high"
+    ) -> Project:
         self.db.execute(
-            "INSERT INTO projects (slug, name, summary, mode, created_at) VALUES (?, ?, ?, ?, ?)",
-            (slug, name, summary, mode, now()),
+            "INSERT INTO projects (slug, name, summary, mode, model, effort, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (slug, name, summary, mode, model, effort, now()),
         )
         return self.project(slug)
 
@@ -146,6 +172,27 @@ class Store:
 
     def set_paused(self, slug: str, paused: bool) -> None:
         self.db.execute("UPDATE projects SET paused = ? WHERE slug = ?", (int(paused), slug))
+
+    def update_project(self, slug: str, **fields: str) -> Project:
+        assert set(fields) <= {"name", "mode", "model", "effort"}, fields
+        columns = ", ".join(f"{name} = ?" for name in fields)
+        self.db.execute(f"UPDATE projects SET {columns} WHERE slug = ?", (*fields.values(), slug))
+        return self.project(slug)
+
+    def move_project(self, old: str, new: str) -> Project:
+        """Give a project a new slug, keeping its jobs."""
+        with self.db:
+            self.db.execute("BEGIN")
+            self.db.execute(
+                "INSERT INTO projects (slug, name, summary, mode, model, effort, room_id, paused, created_at)"
+                " SELECT ?, name, summary, mode, model, effort, NULL, paused, created_at FROM projects WHERE slug = ?",
+                (new, old),
+            )
+            room = self.db.execute("SELECT room_id FROM projects WHERE slug = ?", (old,)).fetchone()["room_id"]
+            self.db.execute("UPDATE jobs SET slug = ? WHERE slug = ?", (new, old))
+            self.db.execute("DELETE FROM projects WHERE slug = ?", (old,))
+            self.db.execute("UPDATE projects SET room_id = ? WHERE slug = ?", (room, new))
+        return self.project(new)
 
     # --- jobs -----------------------------------------------------------------
 

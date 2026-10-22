@@ -53,6 +53,7 @@ class Harness(Protocol):
         max_turns: int,
         log_path: Path,
         env: dict[str, str],
+        effort: str | None = None,
         resume: str | None = None,
         schema: dict | None = None,
         label: str = "",
@@ -63,7 +64,7 @@ class ClaudeHarness:
     def __init__(self, binary: str = "claude"):
         self.binary = binary
 
-    async def run(self, *, cwd, prompt, model, max_turns, log_path, env, resume=None, schema=None, label=""):
+    async def run(self, *, cwd, prompt, model, max_turns, log_path, env, effort=None, resume=None, schema=None, label=""):
         args = [
             self.binary,
             "-p",
@@ -75,6 +76,8 @@ class ClaudeHarness:
             "--permission-mode", "bypassPermissions",
             "--json-schema", json.dumps(schema or VERDICT_SCHEMA),
         ]  # fmt: skip
+        if effort:
+            args += ["--effort", effort]
         if resume:
             args += ["--resume", resume]
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,10 +116,14 @@ class ClaudeHarness:
                 except TimeoutError:
                     proc.kill()
             raise
-        return interpret(result, session_id, proc.returncode, stderr)
+        return interpret(result, session_id, proc.returncode, stderr, verdict_expected=schema is None)
 
 
-def interpret(result: dict | None, session_id: str | None, returncode: int | None, stderr: str = "") -> RunResult:
+def interpret(
+    result: dict | None, session_id: str | None, returncode: int | None, stderr: str = "", verdict_expected: bool = True
+) -> RunResult:
+    """Read Claude Code's final `result` event. `verdict` holds the structured output: a phase
+    verdict normally, or whatever a custom schema asked for (`verdict_expected=False`)."""
     if result is None:
         tail = stderr.strip()[-500:]
         if LIMIT_RE.search(tail):
@@ -137,7 +144,7 @@ def interpret(result: dict | None, session_id: str | None, returncode: int | Non
             return RunResult("limit", session_id=session_id, error=text[:500], usage=usage)
         return RunResult("error", session_id=session_id, error=(text or str(result.get("subtype")))[:500], usage=usage)
     verdict = result.get("structured_output")
-    if not isinstance(verdict, dict) or verdict.get("verdict") not in VERDICTS:
+    if not isinstance(verdict, dict) or (verdict_expected and verdict.get("verdict") not in VERDICTS):
         return RunResult("error", session_id=session_id, error="no verdict in the result", usage=usage)
     return RunResult("verdict", verdict=verdict, session_id=session_id, usage=usage)
 
@@ -167,6 +174,7 @@ class FakeCall:
     resume: str | None
     label: str
     env: dict[str, str]
+    effort: str | None = None
 
 
 class FakeHarness:
@@ -176,8 +184,8 @@ class FakeHarness:
         self.script = script
         self.calls: list[FakeCall] = []
 
-    async def run(self, *, cwd, prompt, model, max_turns, log_path, env, resume=None, schema=None, label=""):
-        call = FakeCall(cwd, prompt, model, max_turns, resume, label, env)
+    async def run(self, *, cwd, prompt, model, max_turns, log_path, env, effort=None, resume=None, schema=None, label=""):
+        call = FakeCall(cwd, prompt, model, max_turns, resume, label, env, effort)
         self.calls.append(call)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(log_path, "wt") as out:

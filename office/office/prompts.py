@@ -45,6 +45,7 @@ class Prompts:
             feedback=format_feedback(feedback),
             lessons=lessons.strip() or "(none yet)",
             lessons_path=s.state_dir / "lessons.md",
+            proposals_dir=s.state_dir / "proposals",
             skills=s.process_dir / "skills",
         )
 

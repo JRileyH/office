@@ -44,14 +44,16 @@ def test_inbox_idea_becomes_a_project_with_its_own_room(office):
             "alias": "tree-cards",
         }
         job = office.store.active_job("tree-cards")
-        assert (job.kind, job.playbook, job.state) == ("new", "standard", "queued")
+        # A minute's grace (none in tests) to change the settings before work starts.
+        assert (job.kind, job.playbook, job.state) == ("new", "standard", "parked")
         assert job.request == "a flashcard game for identifying northeastern us trees"
         [reply] = office.chat.texts(office.inbox)[1:]  # after the welcome
-        assert reply.startswith("New project: Tree Cards (tree-cards). Starting now.")
+        assert reply.startswith("New project: Tree Cards (tree-cards), mode standard, model opus, high effort.")
         assert f"https://matrix.to/#/{room}" in reply
         [intro] = office.chat.texts(room)
         assert "A flashcard game for northeastern US trees." in intro
         assert "https://tree-cards.unlaunched.dev/" in intro
+        assert "Mode standard, model opus, high effort. Starting in a minute" in intro
         # Triage is a cheap structured call.
         triage = office.harness.calls[0]
         assert (triage.model, triage.label) == ("haiku", "intake")
@@ -305,10 +307,10 @@ def test_commands(office):
 
         await office.say(inbox, "!queue")
         job = office.store.active_job("tree-cards")
-        assert office.chat.sent[-1] == (inbox, f"#{job.id} Tree Cards: new project, queued, spec", True)
+        assert office.chat.sent[-1] == (inbox, f"#{job.id} Tree Cards: new project, starting shortly, spec", True)
 
         await office.say(room, "!status")
-        assert office.chat.texts(room)[-1].startswith("Tree Cards (tree-cards)\n#")
+        assert office.chat.texts(room)[-1].startswith("Tree Cards (tree-cards)\nMode standard, model opus, high effort\n#")
 
         await office.say(room, "!pause")
         assert office.store.project("tree-cards").paused
@@ -347,5 +349,129 @@ def test_rooms_are_created_once(office):
         await office.bot.ensure_rooms()
         await office.bot.ensure_rooms()
         assert [r["alias"] for r in office.chat.rooms] == ["inbox", "status"]
+
+    run(go())
+
+
+# --- settings, names and slugs ------------------------------------------------
+
+
+def test_dictated_settings_pick_the_playbook_model_and_effort(office):
+    async def go():
+        office.harness.script = [{**TREES, "name": "Leaf Peeper", "slug": "leaf-peeper", "mode": "rigorous", "model": "fable", "effort": "max"}]
+        await office.bot.ensure_rooms()
+        await office.say(office.inbox, "make a game called Leaf Peeper, rigorous, fable, max effort")
+        project = office.store.project("leaf-peeper")
+        assert (project.name, project.mode, project.model, project.effort) == ("Leaf Peeper", "rigorous", "fable", "max")
+        assert office.store.active_job("leaf-peeper").playbook == "rigorous"
+        office.harness.script = [verdict("continue")]
+        await office.step()
+        call = office.harness.calls[-1]
+        assert (call.model, call.effort) == ("fable", "max")
+        assert "# This phase: spec (1 of 8)" in call.prompt and "**rigorous mode**" in call.prompt
+        assert office.store.runs()[0]["model"] == "fable/max"
+
+    run(go())
+
+
+def test_unspecified_settings_use_the_defaults(tmp_path):
+    office = Office(tmp_path, default_mode="reckless", default_model="sonnet", default_effort="xhigh")
+
+    async def go():
+        office.harness.script = [{**TREES, "mode": "unspecified", "model": "unspecified", "effort": "nonsense"}]
+        await office.bot.ensure_rooms()
+        await office.say(office.inbox, "trees")
+        project = office.store.project("tree-cards")
+        assert (project.mode, project.model, project.effort) == ("reckless", "sonnet", "xhigh")
+        assert office.store.active_job("tree-cards").playbook == "reckless"
+
+    run(go())
+
+
+def test_settings_commands(office):
+    async def go():
+        room = await new_project(office, [])
+        job = office.store.active_job("tree-cards")
+
+        await office.say(room, "!mode rigorous")
+        assert office.chat.texts(room)[-1] == (
+            "Tree Cards: mode rigorous, model opus, high effort. The new-project job will follow the rigorous playbook."
+        )
+        assert office.store.job(job.id).playbook == "rigorous"
+
+        await office.say(office.inbox, "!effort tree-cards max")
+        assert office.store.project("tree-cards").effort == "max"
+        await office.say(room, "!model sonnet")
+        await office.say(room, "!model gpt")
+        assert office.chat.texts(room)[-1] == "Usage: !model fable|opus|sonnet|haiku"
+        await office.say(office.inbox, "!mode rigorous")
+        assert office.chat.texts(office.inbox)[-1] == "Usage: !mode <project> reckless|standard|rigorous"
+
+        office.harness.script = [verdict("continue")]
+        await office.step()
+        assert (office.harness.calls[-1].model, office.harness.calls[-1].effort) == ("sonnet", "max")
+
+        # Once the job has started, its playbook stays.
+        await office.say(room, "!mode reckless")
+        assert office.store.job(job.id).playbook == "rigorous"
+        assert "keeps the rigorous playbook" in office.chat.texts(room)[-1]
+
+        await office.say(room, "!status")
+        assert "Mode reckless, model sonnet, max effort" in office.chat.texts(room)[-1]
+
+    run(go())
+
+
+def test_rename(office):
+    async def go():
+        room = await new_project(office, [])
+        await office.say(room, "!rename Leaf Peeper")
+        assert office.store.project("tree-cards").name == "Leaf Peeper"
+        assert office.chat.names[room] == "Leaf Peeper"
+        await office.say(office.inbox, "!rename tree-cards Canopy Quiz")
+        assert office.store.project("tree-cards").name == "Canopy Quiz"
+
+    run(go())
+
+
+def test_slug_moves_the_project_and_queues_the_reference_fixes(office):
+    async def go():
+        room = await new_project(office, [verdict("done", "Live.")])
+        await office.step()  # reckless enough: the fake says done after one phase
+        old_job = office.store.jobs()[0]
+        assert old_job.state == "done"
+
+        await office.say(room, "!slug leaf-peeper")
+        reply = office.chat.texts(room)[-1]
+        assert reply.startswith("Moved Tree Cards to leaf-peeper: https://github.com/unlaunched/leaf-peeper")
+        assert "https://github.com/unlaunched/tree-cards is still there" in reply
+        assert office.store.project("tree-cards") is None
+        project = office.store.project("leaf-peeper")
+        assert project.room_id == room and project.name == "Tree Cards"
+        assert office.store.job(old_job.id).slug == "leaf-peeper"  # history moves with it
+        assert office.deployer.stopped == ["tree-cards"]
+        assert (room, "leaf-peeper") in office.chat.aliases
+        assert office.chat.topics[room] == "https://leaf-peeper.unlaunched.dev/ · https://github.com/unlaunched/leaf-peeper"
+        assert office.workspace.path("leaf-peeper").is_dir() and not office.workspace.path("tree-cards").exists()
+
+        fix = office.store.active_job("leaf-peeper")
+        assert (fix.kind, fix.playbook) == ("change", "feature")
+        assert "moved from `tree-cards` to `leaf-peeper`" in fix.request
+
+    run(go())
+
+
+def test_slug_refuses_bad_or_taken_slugs_and_running_jobs(office):
+    async def go():
+        room = await new_project(office, [])
+        office.workspace.repos.add("taken")
+        await office.say(room, "!slug Office")
+        assert "won't work as an address" in office.chat.texts(room)[-1]
+        await office.say(room, "!slug taken")
+        assert office.chat.texts(room)[-1] == "taken is taken (by a project or an existing repo)."
+        office.store.update_job(office.store.active_job("tree-cards").id, state="running")
+        await office.say(room, "!slug oaks")
+        assert office.chat.texts(room)[-1].startswith("A phase is running.")
+        assert office.store.project("tree-cards") is not None
 
     run(go())

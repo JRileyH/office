@@ -24,20 +24,22 @@ from office.store import Store
 @pytest.mark.parametrize(
     "name, phases",
     [
+        ("reckless", ["build"]),
         ("standard", ["spec", "scaffold", "mvp", "buildout", "review", "ship"]),
+        ("rigorous", ["spec", "spec-review", "scaffold", "mvp", "buildout", "review", "second-pass", "ship"]),
         ("feature", ["change", "review", "ship"]),
     ],
 )
 def test_playbooks_load(name, phases):
     book = playbooks.load(REPO / "playbooks" / f"{name}.md")
     assert [p.name for p in book.phases] == phases
-    assert all(p.instructions and p.max_turns > 0 and p.model for p in book.phases)
+    assert all(p.instructions and p.max_turns > 0 for p in book.phases)
     assert book.intro
 
 
 def test_playbook_sections_must_match_phases(tmp_path):
     path = tmp_path / "bad.md"
-    path.write_text("---\nphases:\n  - {name: a, model: sonnet, max_turns: 5}\n---\nintro\n\n## b\nstuff\n")
+    path.write_text("---\nphases:\n  - {name: a, max_turns: 5}\n---\nintro\n\n## b\nstuff\n")
     with pytest.raises(ValueError, match="phase a has no '## a' section"):
         playbooks.load(path)
 
@@ -266,3 +268,45 @@ def test_status_page_lists_projects_and_jobs(office):
     page = client.get("/").text
     assert "Trees &lt;b&gt;" in page and "https://trees.unlaunched.dev/" in page
     assert "<td>spec</td><td>queued</td>" in page
+
+
+def test_structured_output_with_a_custom_schema_is_not_a_verdict():
+    """The bug that named a project after the first words of its dictation."""
+    brief = {"name": "Leaf Peeper", "slug": "leaf-peeper", "summary": "s"}
+    r = interpret(result(structured_output=brief), None, 0, verdict_expected=False)
+    assert (r.outcome, r.verdict) == ("verdict", brief)
+    assert interpret(result(structured_output=brief), None, 0).outcome == "error"
+
+
+def test_triage_through_the_claude_harness(tmp_path):
+    binary = tmp_path / "claude"
+    binary.write_text(
+        f"#!{sys.executable}\nimport json, sys\nsys.stdin.read()\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'structured_output':"
+        " {'name': 'Leaf Peeper', 'slug': 'leaf-peeper', 'summary': 'Guess the tree.', 'mode': 'rigorous',"
+        " 'model': 'unspecified', 'effort': 'max'}}))\n"
+    )
+    binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
+    brief = asyncio.run(
+        intake.triage(
+            ClaudeHarness(str(binary)), REPO / "prompts" / "intake.md", "hey i would like a game called leaf peeper",
+            cwd=tmp_path / "triage", log_path=tmp_path / "triage.jsonl.gz", env={},
+        )
+    )  # fmt: skip
+    assert brief == intake.Brief("Leaf Peeper", "leaf-peeper", "Guess the tree.", mode="rigorous", effort="max")
+
+
+def test_older_databases_get_new_columns(tmp_path):
+    import sqlite3
+
+    db = sqlite3.connect(tmp_path / "old.db")
+    db.execute(
+        "CREATE TABLE projects (slug TEXT PRIMARY KEY, name TEXT NOT NULL, summary TEXT NOT NULL,"
+        " mode TEXT NOT NULL DEFAULT 'standard', room_id TEXT UNIQUE, paused INTEGER NOT NULL DEFAULT 0,"
+        " created_at TEXT NOT NULL)"
+    )
+    db.execute("INSERT INTO projects (slug, name, summary, created_at) VALUES ('hey', 'Hey', 's', 'now')")
+    db.commit()
+    db.close()
+    project = Store(tmp_path / "old.db").project("hey")
+    assert (project.model, project.effort) == ("opus", "high")

@@ -1,8 +1,10 @@
 """Playbooks: markdown files with the phase list in front matter and one `## <phase>` section per phase.
 
+The model and effort come from the project, not the playbook.
+
     ---
     phases:
-      - {name: spec, model: sonnet, max_turns: 60}
+      - {name: spec, max_turns: 60}
     ---
     Text here applies to every phase.
 
@@ -24,7 +26,6 @@ SECTION_RE = re.compile(r"^## +(\S+) *$", re.M)
 @dataclass(frozen=True)
 class Phase:
     name: str
-    model: str
     max_turns: int
     instructions: str
 
@@ -54,7 +55,7 @@ def load(path: Path) -> Playbook:
         name = spec["name"]
         if name not in sections:
             raise ValueError(f"{path}: phase {name} has no '## {name}' section")
-        phases.append(Phase(name, spec["model"], int(spec["max_turns"]), sections[name]))
+        phases.append(Phase(name, int(spec["max_turns"]), sections[name]))
     extra = set(sections) - {p.name for p in phases}
     if extra:
         raise ValueError(f"{path}: sections without a phase: {', '.join(sorted(extra))}")

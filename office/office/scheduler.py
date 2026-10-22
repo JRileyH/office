@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from . import playbook as playbooks
@@ -17,7 +17,7 @@ from .config import Settings
 from .harness import Harness, RunResult
 from .matrix import Chat
 from .prompts import Prompts
-from .store import Job, Project, Store
+from .store import Job, Project, Store, later
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -29,10 +29,6 @@ ERROR_RETRY = timedelta(minutes=1)
 IDLE_POLL_SECONDS = 30
 # Never handed to workers: they talk to Riggy through verdicts, not as the bot.
 WORKER_ENV_DENY = frozenset({"OFFICE_MATRIX_PASSWORD"})
-
-
-def later(delta: timedelta) -> str:
-    return (datetime.now(UTC) + delta).isoformat(timespec="seconds")
 
 
 class Scheduler:
@@ -133,10 +129,10 @@ class Scheduler:
             lessons = self.lessons_path.read_text() if self.lessons_path.exists() else ""
             prompt, resume = self.prompts.phase(project, job, book, feedback, lessons), None
 
-        result = await self.execute(job, project, phase.name, phase.model, phase.max_turns, prompt, resume)
+        result = await self.execute(job, project, phase.name, phase.max_turns, prompt, resume)
         if result.outcome == "max_turns" and result.session_id:
             result = await self.execute(
-                job, project, f"{phase.name}-wrapup", phase.model, WRAPUP_TURNS, self.prompts.wrapup(), result.session_id
+                job, project, f"{phase.name}-wrapup", WRAPUP_TURNS, self.prompts.wrapup(), result.session_id
             )
         if self.store.job(job.id).state == "killed":
             return
@@ -156,15 +152,18 @@ class Scheduler:
         return job
 
     async def execute(
-        self, job: Job, project: Project, label: str, model: str, max_turns: int, prompt: str, resume: str | None
+        self, job: Job, project: Project, label: str, max_turns: int, prompt: str, resume: str | None
     ) -> RunResult:
+        """One run of the phase, with the project's current model and effort."""
+        project = self.store.project(project.slug)
         log_path = self.settings.state_dir / "jobs" / str(job.id) / f"{len(self.store.runs(job.id)) + 1:03d}-{label}.jsonl.gz"
-        run_id = self.store.start_run(job.id, label, model, str(log_path))
+        run_id = self.store.start_run(job.id, label, f"{project.model}/{project.effort}", str(log_path))
         try:
             result = await self.harness.run(
                 cwd=self.workspace.path(project.slug),
                 prompt=prompt,
-                model=model,
+                model=project.model,
+                effort=project.effort,
                 max_turns=max_turns,
                 log_path=log_path,
                 env=self.worker_env(project, job),

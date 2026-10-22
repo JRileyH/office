@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 import uvicorn
 
 from .bot import Bot
 from .config import Settings
+from .deployer_client import DeployerClient
 from .harness import ClaudeHarness, FakeHarness
 from .matrix import Matrix
 from .prompts import Prompts
@@ -36,7 +38,8 @@ async def main() -> None:
     chat = Matrix(settings.matrix_url, settings.matrix_user, settings.matrix_password, settings.owner, store)
     prompts = Prompts(settings)
     scheduler = Scheduler(settings, store, chat, harness, workspace, prompts)
-    bot = Bot(settings, store, chat, scheduler, harness, workspace, prompts)
+    deployer = DeployerClient(settings.deployer_url, os.environ.get("DEPLOYER_SECRET", ""))
+    bot = Bot(settings, store, chat, scheduler, harness, workspace, prompts, deployer)
 
     server = uvicorn.Server(uvicorn.Config(create_app(settings, store, scheduler), host="0.0.0.0", port=8000, access_log=False))
     web = asyncio.create_task(server.serve())

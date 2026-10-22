@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,10 @@ class FakeChat:
         self.sent: list[tuple[str, str, bool]] = []
         self.rooms: list[dict] = []
         self.typing_calls: list[tuple[str, bool]] = []
+        self.names: dict[str, str] = {}
+        self.topics: dict[str, str] = {}
+        self.aliases: list[tuple[str, str]] = []
+
 
     async def send(self, room_id: str, text: str, notice: bool = False) -> str:
         self.sent.append((room_id, text, notice))
@@ -38,8 +43,25 @@ class FakeChat:
         self.rooms.append({"id": room_id, "name": name, "topic": topic, "alias": alias})
         return room_id
 
+    async def set_name(self, room_id: str, name: str) -> None:
+        self.names[room_id] = name
+
+    async def set_topic(self, room_id: str, topic: str) -> None:
+        self.topics[room_id] = topic
+
+    async def add_alias(self, room_id: str, alias: str) -> None:
+        self.aliases.append((room_id, alias))
+
     def texts(self, room_id: str) -> list[str]:
         return [text for room, text, _ in self.sent if room == room_id]
+
+
+class FakeDeployer:
+    def __init__(self):
+        self.stopped: list[str] = []
+
+    async def stop(self, slug: str) -> None:
+        self.stopped.append(slug)
 
 
 class Office:
@@ -70,7 +92,11 @@ class Office:
         self.workspace = LocalWorkspace(self.settings.workspace_dir)
         self.prompts = Prompts(self.settings)
         self.scheduler = Scheduler(self.settings, self.store, self.chat, self.harness, self.workspace, self.prompts)
-        self.bot = Bot(self.settings, self.store, self.chat, self.scheduler, self.harness, self.workspace, self.prompts)
+        self.deployer = FakeDeployer()
+        self.bot = Bot(
+            self.settings, self.store, self.chat, self.scheduler, self.harness, self.workspace, self.prompts, self.deployer
+        )
+        self.bot.start_delay = timedelta(0)  # no grace period in tests
 
     async def say(self, room_id: str, body: str) -> None:
         await self.bot.handle(Message(room_id, OWNER, body, f"$in{len(self.chat.sent)}"))
