@@ -40,6 +40,8 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   (office's token can't). To delete every project at once, run `bin/nuke.sh`
   on the box ("Starting over" in `docs/runbook.md`).
 - **Status page:** https://office.unlaunched.dev lists projects, jobs and runs.
+  For each step a worker takes, as it happens, run `bin/watch.sh` on the box
+  ("Checking on a job" in `docs/runbook.md`).
 
 ## Local mode
 

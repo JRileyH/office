@@ -161,6 +161,32 @@ docker compose logs --since 2m office | grep -E 'logged in|ERROR'   # "logged in
 
 A job that was mid-phase reruns that phase when office comes back.
 
+## Checking on a job
+
+```sh
+cd ~/web/office
+bin/watch.sh                # the queue, then the running phase step by step (Ctrl-C stops)
+bin/watch.sh 3              # everything job 3 did, start to finish
+bin/watch.sh 3 > job3.txt   # the same, to keep or paste somewhere
+```
+
+Each line is one step, timed from the start of the phase: `→` a tool call (the
+command or file), `←` its output (first and last line), `✗` a failed call,
+`says:` what the worker wrote, `┆` a step by one of its subagents, and `■` how
+the phase ended. `bin/watch.sh` keeps going through the next phases and stops
+when nothing more is about to run, for example when the job waits on you.
+
+After two quiet minutes it says what the worker is on ("running Bash npm test
+for 4m", "thinking for 3m"). After ten minutes with nothing logged it says the
+job may be stuck. To dig further:
+
+```sh
+docker compose top office                                         # what's running in the container now
+docker compose logs --since 1h office | grep -E 'WARNING|ERROR'    # failed attempts and why
+```
+
+`!kill` in the project's room stops the job.
+
 ## Starting over
 
 `!delete` in a project's room deletes one project. To delete all of them:

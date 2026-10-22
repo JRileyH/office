@@ -101,6 +101,7 @@ class ClaudeHarness:
                 async for raw in proc.stdout:
                     line = raw.decode(errors="replace")
                     out.write(line)
+                    out.flush()  # so bin/watch.sh can read a phase while it runs
                     event = _parse(line)
                     if event.get("session_id"):
                         session_id = event["session_id"]

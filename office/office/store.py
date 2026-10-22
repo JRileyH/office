@@ -287,6 +287,10 @@ class Store:
         columns = ", ".join(f"{name} = ?" for name in fields)
         self.db.execute(f"UPDATE runs SET {columns} WHERE id = ?", (*fields.values(), run_id))
 
+    def run(self, run_id: int) -> dict | None:
+        row = self.db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
     def runs(self, job_id: int | None = None, limit: int = 50) -> list[dict]:
         if job_id is None:
             rows = self.db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))

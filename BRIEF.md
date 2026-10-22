@@ -220,7 +220,7 @@ New project flow: intake → spec → scaffold and first deploy (proves hosting 
 
 **Budget.** Background work, Riggy's hands-on Claude Code use and his chats share one pool. Keep a reserve so he's never locked out. One worker by default, two only when the queue is deep and usage is low. Small model for triage and mechanical steps, mid model for building, strongest only for specs and reviews in rigorous mode. Record token usage per run; after a few projects, each mode gets an expected range.
 
-**Observability.** Every run's event stream saved and compressed per job; a hook logs every tool call (time, project, job, command or file) to an append-only log; job events in SQLite; git history. The status page links from each job to its logs. Recurring mistakes go to `lessons.md`.
+**Observability.** Every run's event stream saved and compressed per job, readable while it runs (`bin/watch.sh`); a hook logs every tool call (time, project, job, command or file) to an append-only log; job events in SQLite; git history. The status page links from each job to its logs. Recurring mistakes go to `lessons.md`.
 
 ## Local mode
 

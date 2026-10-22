@@ -69,6 +69,10 @@ matrix-office-account:
 matrix-ping to *message:
     docker compose exec -T office python -m office.matrix_ping {{to}} {{message}}
 
+# What office is doing: the queue, then each phase step by step (or everything one job did)
+watch *job:
+    bin/watch.sh {{job}}
+
 # Delete every project and start from zero (says what will go, asks first)
 nuke:
     bin/nuke.sh
