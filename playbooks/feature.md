@@ -1,8 +1,8 @@
 ---
 phases:
-  - {name: change, model: sonnet, max_turns: 200}
-  - {name: review, model: sonnet, max_turns: 80}
-  - {name: ship, model: sonnet, max_turns: 100}
+  - {name: change, max_turns: 400}
+  - {name: review, max_turns: 150}
+  - {name: ship, max_turns: 150}
 ---
 A change to an existing, live project: a feature, a fix, or "I don't like how X
 works, make it do Y". Riggy asked for it in the project's room; his words are the
@@ -13,12 +13,17 @@ Don't check in unless the request is genuinely ambiguous in a way that changes w
 gets built, or would destroy something irreversible (deleting data). Otherwise
 decide, record the decision in `docs/decisions.md`, and carry on.
 
+The project's mode sets the bar: in reckless mode keep tests light; in standard,
+test the paths you touch; in rigorous, test thoroughly (including browser tests
+for changed flows) and check the fixes again after review.
+
 ## change
 
 1. Work out what Riggy wants. If it's a bug, reproduce it first.
 2. For anything bigger than a small fix, write a short mini-spec in
    `docs/specs/` (what changes, what doesn't, how you'll know it works).
 3. Branch, make the change, and add or update tests for the paths it touches.
+   Check the result in a real browser (skills/browser.md) at phone size.
 4. Open a PR that closes the job's issue and wait for checks to pass.
 
 Verdict: `continue`, linking the PR. Use `blocked` with a specific question only

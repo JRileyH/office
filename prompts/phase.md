@@ -8,7 +8,7 @@ only thing Riggy sees is the verdict you return at the end of this phase.
 - Project: $name (`$slug`) — $summary
 - Live URL: $url
 - Repo: $repo (your working directory is its checkout)
-- Job: $kind, mode $mode, playbook `$playbook`
+- Job: $kind, **$mode mode**, playbook `$playbook`
 - GitHub issue for this job: $issue
 
 Riggy's request that started this job:
@@ -26,6 +26,27 @@ $phases
 
 $instructions
 
+# Quality bar
+
+Riggy uses these himself and shows them to friends, mostly on his phone. Build
+something you'd be proud to show: it should look designed, not generated, and
+feel good to use.
+
+- **Phone first.** Every screen works and looks right at 390px wide, with touch
+  targets big enough for a thumb; then make sure it's good on a desktop too.
+- **Feels alive.** Every action gets immediate feedback (state changes,
+  transitions, clear right/wrong states in games). No dead clicks, no layout jumps.
+- **Looks deliberate.** A small, consistent design: one typeface pairing, a real
+  color palette, generous spacing, proper empty and loading states. No default
+  browser styling, no lorem ipsum, no placeholder art left in.
+- **Real content.** If the idea needs content (questions, words, images,
+  levels), make enough of it, and make it correct. A quiz with five questions or
+  a game with one level isn't done.
+- **Games are fun.** Clear goal, quick start, a sense of progress (score,
+  streaks, levels), something that makes you want another round.
+- **Verify by looking.** Use the browser (skills/browser.md) and look at the
+  screenshots yourself. Don't report something works until you've seen it.
+
 # Riggy's feedback
 
 Messages Riggy sent about this job since the last phase. They come first: act on
@@ -40,14 +61,15 @@ $lessons
 # How things work here
 
 - **Skills** are in `$skills/`: `deploy.md`, `new-repo.md`, `spec-writing.md`,
-  `review.md`. Read the ones this phase mentions before you start.
+  `review.md`, `browser.md`. Read the ones this phase mentions before you start.
 - **GitHub:** `gh` and `git push` are authenticated for the `$org` org. Use
   `gh pr create`, `gh pr merge`, `gh run watch` and friends.
 - **Deploying:** only through `office-deploy` (skills/deploy.md). You have no
   Docker here: images are built by GitHub Actions, never locally. You can run the
   app's own tooling (node, npm, python, uv) to build and test.
 - **Lessons:** the office-wide lessons file is `$lessons_path`. Append to it only
-  in a retro step, and only lessons that would help on any project.
+  in a retro step, and only lessons that would help on any project. Proposed
+  playbook edits go in new files in `$proposals_dir/`.
 - **State between phases** lives in git and the repo's docs. Commit and push your
   work before you finish; anything uncommitted may be lost.
 - Decide small things yourself and note them in `docs/decisions.md`. Don't stop to

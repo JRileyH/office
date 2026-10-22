@@ -30,6 +30,15 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 COPY --from=uv /uv /uvx /usr/local/bin/
 
+# Chromium and Playwright, so workers can look at what they build (skills/browser.md).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
+    NODE_PATH=/usr/local/lib/node_modules
+# /node_modules makes `import "playwright"` resolve from any script (ES modules ignore NODE_PATH).
+RUN npm install -g playwright@1 \
+    && playwright install --with-deps chromium \
+    && ln -s /usr/local/lib/node_modules /node_modules \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
 # Claude Code refuses to skip permission prompts as root, and workers need that.
 RUN useradd --create-home --uid 1000 office \
     && install -d -o office -g office /var/lib/office /workspace /home/office/.claude /home/office/.cache
@@ -43,6 +52,7 @@ WORKDIR /opt/office/app
 COPY office/pyproject.toml office/uv.lock ./
 RUN uv sync --frozen --no-dev
 COPY office/office ./office
+COPY --chmod=755 office/tools/office-screenshot.mjs /usr/local/bin/office-screenshot
 # Workers deploy their own project through this (skills/deploy.md).
 RUN printf '#!/bin/sh\nexec /opt/office/app/.venv/bin/python -m office.deploy_cli "$@"\n' > /usr/local/bin/office-deploy \
     && chmod 755 /usr/local/bin/office-deploy

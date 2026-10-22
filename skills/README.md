@@ -7,3 +7,4 @@ office image at `/opt/office/skills`.
 - `new-repo.md`: the shape of every project repo, Dockerfile and workflow.
 - `spec-writing.md`: specs and mini-specs.
 - `review.md`: the fresh-context review.
+- `browser.md`: screenshots and Playwright, to see what you built.
