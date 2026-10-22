@@ -16,7 +16,7 @@ services:
       dockerfile: office/Dockerfile
     image: office-office
     restart: unless-stopped
-    mem_limit: 1536m  # one cap for the service and every worker it runs
+    mem_limit: ${OFFICE_MEM_LIMIT:-1536m}  # one cap for the service and every worker it runs
     environment:
       BASE_DOMAIN: ${BASE_DOMAIN:?set BASE_DOMAIN in .env}
       HARNESS: ${HARNESS:-claude}

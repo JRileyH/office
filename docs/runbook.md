@@ -35,7 +35,7 @@ bin/check-neighbors.sh > var/neighbors-before.txt
 **Box state:**
 
 ```sh
-free -m                      # ~4.2 GB available expected; office caps total ~2.3 GB
+free -m                      # ~4.2 GB available expected; office caps total ~2.3 GB with OFFICE_MEM_LIMIT=1536m
 df -h /                      # images need ~2 GB
 docker network inspect web >/dev/null && echo "web network ok"
 sudo apt install -y just     # optional; every recipe is plain docker compose in justfile
