@@ -56,14 +56,21 @@ def override(slug: str, sha: str, org: str, project: Project) -> dict:
 
 def route(slug: str, port: int, base_domain: str) -> dict:
     """Inner Traefik dynamic config: <slug>.<base_domain> -> the public service."""
+    return _route(slug, base_domain, f"http://{network_alias(slug)}:{port}")
+
+
+def office_route(base_domain: str) -> dict:
+    """The status page at office.<base_domain>. `office` is a reserved slug, so no project can claim it."""
+    return _route("office", base_domain, "http://office:8000")
+
+
+def _route(name: str, base_domain: str, url: str) -> dict:
     return {
         "http": {
             "routers": {
-                slug: {"rule": f"Host(`{slug}.{base_domain}`)", "entryPoints": ["web"], "service": slug}
+                name: {"rule": f"Host(`{name}.{base_domain}`)", "entryPoints": ["web"], "service": name}
             },
-            "services": {
-                slug: {"loadBalancer": {"servers": [{"url": f"http://{network_alias(slug)}:{port}"}]}}
-            },
+            "services": {name: {"loadBalancer": {"servers": [{"url": url}]}}},
         }
     }
 

@@ -64,11 +64,8 @@ services:
     mem_limit: 128m
     volumes:
       - ./traefik/inner.yml:/etc/traefik/traefik.yml:ro
-      # Read-only here; the deployer writes <slug>.yml. Traefik reads subdirectories.
-      - routes:/etc/traefik/dynamic/projects:ro
-    configs:
-      - source: office-route
-        target: /etc/traefik/dynamic/office.yml
+      # Read-only here; the deployer writes every file in it.
+      - routes:/etc/traefik/dynamic:ro
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 30s
@@ -122,21 +119,6 @@ services:
       - ./traefik/edge-local.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/edge-local-routes.yml:/etc/traefik/routes.yml:ro
     networks: [web]
-
-configs:
-  office-route:
-    content: |
-      http:
-        routers:
-          office:
-            rule: Host(`office.${BASE_DOMAIN}`)
-            entryPoints: [web]
-            service: office
-        services:
-          office:
-            loadBalancer:
-              servers:
-                - url: http://office:8000
 
 networks:
   web:

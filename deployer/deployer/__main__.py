@@ -2,7 +2,7 @@ import uvicorn
 
 from .app import create_app
 from .audit import Audit
-from .compose import Docker
+from .compose import Docker, dump, office_route, write_atomic
 from .config import Settings
 from .deploy import Deployer
 from .source import GitHubSource, LocalSource
@@ -16,7 +16,9 @@ def main() -> None:
         docker.login("ghcr.io", settings.registry_user, settings.registry_token)
     else:
         source = LocalSource(settings.git_dir)
-    settings.routes_dir.mkdir(parents=True, exist_ok=True)
+    # Inner Traefik only watches the top of the routes directory, so the
+    # status page's route lives beside the project routes.
+    write_atomic(settings.routes_dir / "office.yml", dump(office_route(settings.base_domain)))
     audit = Audit(settings.data_dir / "audit.jsonl")
     audit.write("start", "ok", git_source=settings.git_source, require_checks=settings.require_checks)
     app = create_app(Deployer(settings, source, docker), audit, settings.secret)

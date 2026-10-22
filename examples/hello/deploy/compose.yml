@@ -1,0 +1,9 @@
+# Untagged on purpose: the deployer pins ghcr.io/unlaunched/hello to the
+# commit being deployed (CI tags every image with its commit sha).
+services:
+  web:
+    image: ghcr.io/unlaunched/hello
+    mem_limit: 32m
+    labels:
+      office.public: "true"
+      office.port: "80"
