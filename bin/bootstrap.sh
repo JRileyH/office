@@ -94,7 +94,7 @@ esac
 missing=()
 [[ -n $(get CLAUDE_CODE_OAUTH_TOKEN) ]] || missing+=(CLAUDE_CODE_OAUTH_TOKEN)
 if [[ $mode == vps ]]; then
-  for key in DEPLOYER_GITHUB_TOKEN DEPLOYER_REGISTRY_USER DEPLOYER_REGISTRY_TOKEN; do
+  for key in OFFICE_GITHUB_TOKEN DEPLOYER_GITHUB_TOKEN DEPLOYER_REGISTRY_USER DEPLOYER_REGISTRY_TOKEN; do
     [[ -n $(get "$key") ]] || missing+=("$key")
   done
 fi

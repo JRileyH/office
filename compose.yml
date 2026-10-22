@@ -21,6 +21,8 @@ services:
       BASE_DOMAIN: ${BASE_DOMAIN:?set BASE_DOMAIN in .env}
       HARNESS: ${HARNESS:-claude}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      GH_TOKEN: ${OFFICE_GITHUB_TOKEN:-}  # workers' token; gh and git (via gh) read GH_TOKEN
+      GITHUB_ORG: ${GITHUB_ORG:-unlaunched}
       DEPLOYER_URL: http://deployer:8000
       DEPLOYER_SECRET: ${DEPLOYER_SECRET:?set DEPLOYER_SECRET in .env}
       MATRIX_URL: http://tuwunel:8008
