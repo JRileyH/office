@@ -34,6 +34,11 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   elsewhere put its slug first): `!help`, `!queue`, `!status`, `!mode`,
   `!model`, `!effort`, `!rename <name>`, `!slug <new-slug>` (moves the repo and
   address; the old repo stays for you to delete), `!pause`, `!resume`, `!kill`.
+- **Deleting a project:** `!delete` in its room says what will go, then
+  `!delete <slug>` takes it all: the site and its data, the checkout, the job
+  history and logs, and the room. The repo stays on GitHub for you to delete
+  (office's token can't). To delete every project at once, run `bin/nuke.sh`
+  on the box ("Starting over" in `docs/runbook.md`).
 - **Status page:** https://office.unlaunched.dev lists projects, jobs and runs.
 
 ## Local mode

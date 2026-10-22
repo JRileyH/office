@@ -69,6 +69,10 @@ matrix-office-account:
 matrix-ping to *message:
     docker compose exec -T office python -m office.matrix_ping {{to}} {{message}}
 
+# Delete every project and start from zero (says what will go, asks first)
+nuke:
+    bin/nuke.sh
+
 # Build and start the stack
 up:
     docker compose up -d --build

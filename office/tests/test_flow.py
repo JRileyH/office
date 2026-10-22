@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 from conftest import Office
 
+from office import nuke
 from office.harness import RunResult
 
 TREES = {"name": "Tree Cards", "slug": "tree-cards", "summary": "A flashcard game for northeastern US trees."}
@@ -562,6 +563,57 @@ def test_a_failed_delete_keeps_the_project_and_can_be_retried(office):
         office.deployer.fail = None
         await office.say(room, "!delete tree-cards")
         assert office.store.project("tree-cards") is None
+
+    run(go())
+
+
+def test_nuke_says_what_will_go_then_deletes_it_all(office):
+    async def go():
+        room = await new_project(office, [verdict("continue")])
+        await office.step()
+        office.deployer.deployed = ["hello", "tree-cards", "zz-old"]
+        lessons = office.settings.state_dir / "lessons.md"
+        lessons.write_text("- a lesson\n")
+        office.workspace.path("zz-old").mkdir()
+
+        assert await nuke.plan(office.settings, office.store, office.deployer) == (
+            "This deletes, for good:\n"
+            "- 1 project(s), each with its site and data, checkout, jobs, run logs and Matrix room:\n"
+            "    tree-cards (Tree Cards)\n"
+            "- 2 more site(s) the deployer has, with their data: hello, zz-old\n"
+            f"- everything in {office.settings.workspace_dir}, office's run logs, triage log, lessons.md and proposals\n"
+            "Kept: the stack, the Matrix accounts, the inbox and status rooms, and .env.\n"
+            "Not touched: the GitHub repos. Delete them at https://github.com/orgs/unlaunched/repositories"
+        )
+        assert office.store.project("tree-cards") and office.deployer.deleted == []  # planning deletes nothing
+
+        said = []
+        problems = await nuke.wipe(office.settings, office.store, office.chat, office.workspace, office.deployer, said.append)
+        assert problems == []
+        assert said == ["deleted project tree-cards", "deleted site hello", "deleted site zz-old"]
+        assert office.deployer.deleted == ["tree-cards", "hello", "zz-old"]
+        assert office.store.projects() == [] and office.store.jobs() == [] and office.store.runs() == []
+        assert list(office.settings.workspace_dir.iterdir()) == []
+        assert not lessons.exists() and not (office.settings.state_dir / "jobs").exists()
+        assert office.chat.closed == [(room, "Tree Cards was deleted.")]
+        # The bot itself carries on as before.
+        assert office.store.get("inbox_room") == office.inbox and (office.settings.state_dir / "office.db").exists()
+        assert await nuke.plan(office.settings, office.store, office.deployer) == nuke.NOTHING
+
+    run(go())
+
+
+def test_nuke_reports_what_it_could_not_delete(office):
+    async def go():
+        await new_project(office, [])
+        office.deployer.deployed = ["hello"]
+        office.deployer.fail = "deleting is off: DEPLOYER_ADMIN_SECRET is not set"
+        problems = await nuke.wipe(office.settings, office.store, office.chat, office.workspace, office.deployer, print)
+        assert problems == [
+            "tree-cards: deleting is off: DEPLOYER_ADMIN_SECRET is not set",
+            "hello: deleting is off: DEPLOYER_ADMIN_SECRET is not set",
+        ]
+        assert office.store.project("tree-cards") is not None  # a second run retries it
 
     run(go())
 

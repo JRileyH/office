@@ -1,8 +1,9 @@
 # VPS runbook: bring office up on stonehenge
 
-Everything here runs as `riggy` on stonehenge unless marked **(Mac)**. Nothing
-touches `~/web/*`: the edge picks office up through Docker labels, and its
-config files never change.
+Everything here runs as `riggy` on stonehenge, in `~/web/office`, unless marked
+**(Mac)**. Nothing touches the neighbors in `~/web` (proxy, misg, trellis,
+shlink): the edge picks office up through Docker labels, and its config files
+never change.
 
 ## 0. Before you start
 
@@ -44,8 +45,8 @@ sudo apt install -y just     # optional; every recipe is plain docker compose in
 ## 1. Get the code
 
 ```sh
-git clone git@github.com:JRileyH/office.git ~/office
-cd ~/office
+git clone git@github.com:JRileyH/office.git ~/web/office
+cd ~/web/office
 ```
 
 (If stonehenge has no SSH key on GitHub, add a read-only deploy key to the
@@ -146,13 +147,45 @@ that invite too. Progress also shows at https://office.unlaunched.dev.
 
 To stop all work without stopping the bot, send `!pause` in the inbox.
 
+## Updating
+
+After pushing new office commits from the Mac:
+
+```sh
+cd ~/web/office
+git pull
+bin/bootstrap.sh vps        # generates any new secret; lists anything left to fill in
+docker compose up -d --build
+docker compose logs --since 2m office | grep -E 'logged in|ERROR'   # "logged in as @office..."
+```
+
+A job that was mid-phase reruns that phase when office comes back.
+
+## Starting over
+
+`!delete` in a project's room deletes one project. To delete all of them:
+
+```sh
+cd ~/web/office
+bin/nuke.sh
+```
+
+It lists what will go and asks you to type `nuke`. Then it stops office, deletes
+every project the way `!delete` does (site, data, checkout, job history, run
+logs, Matrix room), every other site the deployer has (`hello` too; redeploy it
+with `just deploy hello <sha>` if you want it back), and office's lessons and
+proposals, and starts office again. The stack, Matrix accounts, the inbox and
+status rooms, and `.env` stay. GitHub repos stay too: delete them at
+https://github.com/orgs/unlaunched/repositories (office's token can't). If
+something can't be deleted it says so; running it again retries.
+
 ## Rollback
 
 The edge discovers office through container labels, so stopping office's
 containers removes its routes; nothing in `~/web` needs undoing.
 
 ```sh
-cd ~/office
+cd ~/web/office
 docker compose -p office-hello down     # each deployed project (keeps its volumes)
 docker compose down                     # the office stack (keeps volumes: Matrix DB, state)
 docker network rm office-apps office-internal 2>/dev/null
@@ -160,9 +193,9 @@ docker network rm office-apps office-internal 2>/dev/null
 
 Then re-run the neighbor check. To remove office entirely, also
 `docker compose down --volumes` (**deletes the Matrix database and office
-state**) and `rm -rf ~/office`.
+state**) and `rm -rf ~/web/office`.
 
-To roll back just one change, `git checkout <previous commit>` in `~/office`
+To roll back just one change, `git checkout <previous commit>` in `~/web/office`
 and `docker compose up -d --build`.
 
 ## Suggested edge changes (yours to make, in `~/web/proxy`)
