@@ -1,0 +1,53 @@
+# The office service and the worker image: Claude Code workers run as
+# subprocesses in here, so this container is the sandbox.
+# Build context is the repo root (process files are baked in).
+FROM node:24-slim AS node
+FROM ghcr.io/astral-sh/uv:0.12 AS uv
+
+FROM python:3.13-slim
+ARG DEBIAN_FRONTEND=noninteractive
+# Claude Code from Anthropic's signed apt repo (stable channel; fingerprint
+# from https://code.claude.com/docs/en/setup), gh from GitHub's.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git gnupg jq ripgrep \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://downloads.claude.ai/keys/claude-code.asc -o /etc/apt/keyrings/claude-code.asc \
+    && gpg --show-keys --with-colons /etc/apt/keyrings/claude-code.asc \
+        | grep -q '^fpr:::::::::31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE:$' \
+    && echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] https://downloads.claude.ai/claude-code/apt/stable stable main" \
+        > /etc/apt/sources.list.d/claude-code.list \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends claude-code gh \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# Claude Code refuses to skip permission prompts as root, and workers need that.
+RUN useradd --create-home --uid 1000 office \
+    && install -d -o office -g office /var/lib/office /workspace /home/office/.claude /home/office/.cache
+
+# Process files: root-owned, so agents can read but not edit them.
+COPY playbooks /opt/office/playbooks
+COPY skills /opt/office/skills
+COPY prompts /opt/office/prompts
+
+WORKDIR /opt/office/app
+COPY office/pyproject.toml office/uv.lock ./
+RUN uv sync --frozen --no-dev
+COPY office/office ./office
+
+USER office
+ENV PATH="/opt/office/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    CLAUDE_CONFIG_DIR=/home/office/.claude \
+    DISABLE_AUTOUPDATER=1
+HEALTHCHECK --interval=30s --timeout=3s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
+CMD ["python", "-m", "office"]

@@ -1,0 +1,12 @@
+[project]
+name = "office"
+version = "0.1.0"
+description = "Matrix bot, queue, scheduler and status page; runs Claude Code workers"
+requires-python = ">=3.13"
+dependencies = [
+    "starlette>=1.9.0",
+    "uvicorn>=0.54.0",
+]
+
+[tool.uv]
+package = false
