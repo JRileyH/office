@@ -1,0 +1,242 @@
+"""SQLite: the project registry, the job queue, Riggy's notes to jobs, and run records.
+
+One process owns the database and every call is short, so a single connection is enough.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projects (
+    slug TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'standard',
+    room_id TEXT UNIQUE,
+    paused INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY,
+    slug TEXT NOT NULL REFERENCES projects(slug),
+    kind TEXT NOT NULL,              -- new | change
+    request TEXT NOT NULL,           -- Riggy's words that started the job
+    playbook TEXT NOT NULL,
+    phase INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'queued',
+    priority INTEGER NOT NULL DEFAULT 0,
+    resume_session TEXT,             -- set when a blocked phase should continue its session
+    attempts INTEGER NOT NULL DEFAULT 0,
+    retry_at TEXT,
+    issue INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs(id),
+    text TEXT NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs(id),
+    phase TEXT NOT NULL,
+    model TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    outcome TEXT,
+    session_id TEXT,
+    num_turns INTEGER,
+    cost_usd REAL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    log_path TEXT
+);
+"""
+
+# Jobs in these states hold or want the worker slot, or wait on Riggy; anything else is finished.
+ACTIVE = ("queued", "running", "waiting", "parked")
+
+
+def now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+@dataclass
+class Project:
+    slug: str
+    name: str
+    summary: str
+    mode: str
+    room_id: str | None
+    paused: bool
+    created_at: str
+
+
+@dataclass
+class Job:
+    id: int
+    slug: str
+    kind: str
+    request: str
+    playbook: str
+    phase: int
+    state: str
+    priority: int
+    resume_session: str | None
+    attempts: int
+    retry_at: str | None
+    issue: int | None
+    created_at: str
+    updated_at: str
+
+
+class Store:
+    def __init__(self, path: Path | str):
+        self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA foreign_keys=ON")
+        self.db.executescript(SCHEMA)
+
+    # --- kv -------------------------------------------------------------------
+
+    def get(self, key: str) -> str | None:
+        row = self.db.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def put(self, key: str, value: str) -> None:
+        self.db.execute(
+            "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+    # --- projects -------------------------------------------------------------
+
+    def add_project(self, slug: str, name: str, summary: str, mode: str = "standard") -> Project:
+        self.db.execute(
+            "INSERT INTO projects (slug, name, summary, mode, created_at) VALUES (?, ?, ?, ?, ?)",
+            (slug, name, summary, mode, now()),
+        )
+        return self.project(slug)
+
+    def project(self, slug: str) -> Project | None:
+        row = self.db.execute("SELECT * FROM projects WHERE slug = ?", (slug,)).fetchone()
+        return _project(row) if row else None
+
+    def project_by_room(self, room_id: str) -> Project | None:
+        row = self.db.execute("SELECT * FROM projects WHERE room_id = ?", (room_id,)).fetchone()
+        return _project(row) if row else None
+
+    def projects(self) -> list[Project]:
+        return [_project(r) for r in self.db.execute("SELECT * FROM projects ORDER BY created_at DESC")]
+
+    def set_room(self, slug: str, room_id: str) -> None:
+        self.db.execute("UPDATE projects SET room_id = ? WHERE slug = ?", (room_id, slug))
+
+    def set_paused(self, slug: str, paused: bool) -> None:
+        self.db.execute("UPDATE projects SET paused = ? WHERE slug = ?", (int(paused), slug))
+
+    # --- jobs -----------------------------------------------------------------
+
+    def add_job(self, slug: str, kind: str, request: str, playbook: str, priority: int = 0) -> Job:
+        cur = self.db.execute(
+            "INSERT INTO jobs (slug, kind, request, playbook, priority, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (slug, kind, request, playbook, priority, now(), now()),
+        )
+        return self.job(cur.lastrowid)
+
+    def job(self, job_id: int) -> Job | None:
+        row = self.db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return Job(**row) if row else None
+
+    def update_job(self, job_id: int, **fields) -> Job:
+        fields["updated_at"] = now()
+        columns = ", ".join(f"{name} = ?" for name in fields)
+        self.db.execute(f"UPDATE jobs SET {columns} WHERE id = ?", (*fields.values(), job_id))
+        return self.job(job_id)
+
+    def active_job(self, slug: str) -> Job | None:
+        """The project's unfinished job, if any. A project runs one job at a time."""
+        marks = ", ".join("?" * len(ACTIVE))
+        row = self.db.execute(
+            f"SELECT * FROM jobs WHERE slug = ? AND state IN ({marks}) ORDER BY id LIMIT 1", (slug, *ACTIVE)
+        ).fetchone()
+        return Job(**row) if row else None
+
+    def jobs(self, states: tuple[str, ...] | None = None, limit: int = 50) -> list[Job]:
+        if states:
+            marks = ", ".join("?" * len(states))
+            rows = self.db.execute(
+                f"SELECT * FROM jobs WHERE state IN ({marks}) ORDER BY priority DESC, id LIMIT ?", (*states, limit)
+            )
+        else:
+            rows = self.db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,))
+        return [Job(**r) for r in rows]
+
+    def next_job(self, at: str | None = None) -> Job | None:
+        """Highest priority queued job whose project isn't paused; parked jobs come back once their time is up."""
+        at = at or now()
+        self.db.execute("UPDATE jobs SET state = 'queued', retry_at = NULL WHERE state = 'parked' AND retry_at <= ?", (at,))
+        row = self.db.execute(
+            "SELECT jobs.* FROM jobs JOIN projects USING (slug)"
+            " WHERE jobs.state = 'queued' AND projects.paused = 0"
+            " ORDER BY jobs.priority DESC, jobs.id LIMIT 1"
+        ).fetchone()
+        return Job(**row) if row else None
+
+    def requeue_interrupted(self) -> list[Job]:
+        """After a restart, a job left `running` reruns its phase from the last checkpoint."""
+        jobs = self.jobs(("running",))
+        self.db.execute("UPDATE jobs SET state = 'queued' WHERE state = 'running'")
+        return jobs
+
+    # --- notes ----------------------------------------------------------------
+
+    def add_note(self, job_id: int, text: str) -> None:
+        self.db.execute("INSERT INTO notes (job_id, text, created_at) VALUES (?, ?, ?)", (job_id, text, now()))
+
+    def pending_notes(self, job_id: int) -> list[tuple[int, str]]:
+        rows = self.db.execute("SELECT id, text FROM notes WHERE job_id = ? AND consumed = 0 ORDER BY id", (job_id,))
+        return [(r["id"], r["text"]) for r in rows]
+
+    def consume_notes(self, ids: list[int]) -> None:
+        self.db.executemany("UPDATE notes SET consumed = 1 WHERE id = ?", [(i,) for i in ids])
+
+    # --- runs -----------------------------------------------------------------
+
+    def start_run(self, job_id: int, phase: str, model: str, log_path: str) -> int:
+        cur = self.db.execute(
+            "INSERT INTO runs (job_id, phase, model, started_at, log_path) VALUES (?, ?, ?, ?, ?)",
+            (job_id, phase, model, now(), log_path),
+        )
+        return cur.lastrowid
+
+    def finish_run(self, run_id: int, outcome: str, **usage) -> None:
+        fields = {"outcome": outcome, "ended_at": now(), **usage}
+        columns = ", ".join(f"{name} = ?" for name in fields)
+        self.db.execute(f"UPDATE runs SET {columns} WHERE id = ?", (*fields.values(), run_id))
+
+    def runs(self, job_id: int | None = None, limit: int = 50) -> list[dict]:
+        if job_id is None:
+            rows = self.db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))
+        else:
+            rows = self.db.execute("SELECT * FROM runs WHERE job_id = ? ORDER BY id", (job_id,))
+        return [dict(r) for r in rows]
+
+
+def _project(row: sqlite3.Row) -> Project:
+    data = dict(row)
+    data["paused"] = bool(data["paused"])
+    return Project(**data)

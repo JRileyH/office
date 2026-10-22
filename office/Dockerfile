@@ -43,9 +43,13 @@ WORKDIR /opt/office/app
 COPY office/pyproject.toml office/uv.lock ./
 RUN uv sync --frozen --no-dev
 COPY office/office ./office
+# Workers deploy their own project through this (skills/deploy.md).
+RUN printf '#!/bin/sh\nexec /opt/office/app/.venv/bin/python -m office.deploy_cli "$@"\n' > /usr/local/bin/office-deploy \
+    && chmod 755 /usr/local/bin/office-deploy
 
 USER office
 ENV PATH="/opt/office/app/.venv/bin:$PATH" \
+    PYTHONPATH=/opt/office/app \
     PYTHONUNBUFFERED=1 \
     CLAUDE_CONFIG_DIR=/home/office/.claude \
     DISABLE_AUTOUPDATER=1

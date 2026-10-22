@@ -19,6 +19,7 @@ services:
     mem_limit: ${OFFICE_MEM_LIMIT:-1536m}  # one cap for the service and every worker it runs
     environment:
       BASE_DOMAIN: ${BASE_DOMAIN:?set BASE_DOMAIN in .env}
+      EDGE_PORT: ${EDGE_PORT:-}
       HARNESS: ${HARNESS:-claude}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       GH_TOKEN: ${OFFICE_GITHUB_TOKEN:-}  # workers' token; gh and git (via gh) read GH_TOKEN
@@ -28,6 +29,7 @@ services:
       MATRIX_URL: http://tuwunel:8008
       OFFICE_MATRIX_USER: ${OFFICE_MATRIX_USER:-@office:matrix.${BASE_DOMAIN}}
       OFFICE_MATRIX_PASSWORD: ${OFFICE_MATRIX_PASSWORD:-}
+      OFFICE_OWNER: ${OFFICE_OWNER:-@riggy:matrix.${BASE_DOMAIN}}
     volumes:
       - office-state:/var/lib/office
       - office-claude:/home/office/.claude

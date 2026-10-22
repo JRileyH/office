@@ -3,9 +3,10 @@ set dotenv-load
 default:
     @just --list
 
-# Run the deployer test suite
-test *args:
-    cd deployer && uv run pytest {{args}}
+# Run both test suites
+test:
+    cd deployer && uv run pytest -q
+    cd office && uv run pytest -q
 
 # First-time setup: fills in .env for this box (local or vps)
 bootstrap mode:
