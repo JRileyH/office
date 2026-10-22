@@ -9,8 +9,9 @@ config files never change.
 **Tokens** (GitHub → Settings → Developer settings):
 
 1. **Fine-grained token** for the deployer: resource owner `unlaunched`, all
-   repositories, permissions **Contents: Read-only** and **Checks: Read-only**
-   if offered (Metadata is added automatically). Goes in `DEPLOYER_GITHUB_TOKEN`.
+   repositories, permissions **Contents: Read-only** and **Actions: Read-only**
+   (Metadata is added automatically). Actions, not Checks: fine-grained
+   tokens don't offer Checks, so the deployer reads workflow runs. Goes in `DEPLOYER_GITHUB_TOKEN`.
 2. **Classic token** with only **`read:packages`**: ghcr.io doesn't accept
    fine-grained tokens. Goes in `DEPLOYER_REGISTRY_TOKEN`, with your GitHub
    username in `DEPLOYER_REGISTRY_USER`.
@@ -97,7 +98,7 @@ Certificate check **(Mac)**:
 curl -sv https://hello.unlaunched.dev/ -o /dev/null 2>&1 | grep -E 'subject|subjectAltName|issuer'
 ```
 
-A deploy with failing or pending checks is refused with the check names; a
+A deploy with failing or pending checks is refused with the workflow names; a
 compose file that breaks a rule is refused with the rule.
 
 ## 6. Matrix and push notifications

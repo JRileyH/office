@@ -15,7 +15,7 @@ class Settings:
     base_domain: str
     git_source: str  # "github" or "local"
     org: str
-    github_token: str  # fine-grained, read-only: contents and checks
+    github_token: str  # fine-grained, read-only: contents and actions
     registry_user: str
     registry_token: str  # classic, read:packages only: ghcr.io doesn't accept fine-grained tokens
     require_checks: bool

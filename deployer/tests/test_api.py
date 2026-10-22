@@ -275,26 +275,34 @@ def test_github_compose_file_missing():
     assert e.value.reasons == [f"deploy/compose.yml not found in unlaunched/hello at {SHA}; is the commit pushed?"]
 
 
+def run(id, workflow_id, name, status, conclusion):
+    return {"id": id, "workflow_id": workflow_id, "name": name, "status": status, "conclusion": conclusion}
+
+
 @pytest.mark.parametrize(
     "runs, failing",
     [
-        ([], ["no check runs on this commit yet; wait for CI to start"]),
-        ([{"name": "build", "status": "completed", "conclusion": "success"}], []),
+        ([], ["no workflow runs on this commit yet; wait for CI to start"]),
+        ([run(1, 10, "build", "completed", "success")], []),
         (
             [
-                {"name": "build", "status": "completed", "conclusion": "success"},
-                {"name": "lint", "status": "completed", "conclusion": "skipped"},
-                {"name": "test", "status": "in_progress", "conclusion": None},
-                {"name": "e2e", "status": "completed", "conclusion": "failure"},
+                run(1, 10, "build", "completed", "success"),
+                run(2, 11, "lint", "completed", "skipped"),
+                run(3, 12, "test", "in_progress", None),
+                run(4, 13, "e2e", "completed", "failure"),
             ],
             ["test: in_progress", "e2e: failure"],
         ),
+        # The latest run of each workflow counts, whatever order GitHub lists them in.
+        ([run(5, 10, "build", "completed", "success"), run(1, 10, "build", "completed", "failure")], []),
+        ([run(1, 10, "build", "completed", "success"), run(5, 10, "build", "queued", None)], ["build: queued"]),
     ],
 )
 def test_github_failing_checks(runs, failing):
     def handler(request):
-        assert request.url.path == f"/repos/unlaunched/hello/commits/{SHA}/check-runs"
-        return httpx.Response(200, json={"total_count": len(runs), "check_runs": runs})
+        assert request.url.path == "/repos/unlaunched/hello/actions/runs"
+        assert request.url.params["head_sha"] == SHA
+        return httpx.Response(200, json={"total_count": len(runs), "workflow_runs": runs})
 
     assert github(handler).failing_checks("hello", SHA) == failing
 
@@ -306,6 +314,6 @@ def test_github_errors_explain_themselves():
     with pytest.raises(GitHubError) as e:
         github(handler).failing_checks("hello", SHA)
     assert str(e.value) == (
-        "GitHub returned 403 reading check runs; Resource not accessible by personal access token; "
+        "GitHub returned 403 reading workflow runs; Resource not accessible by personal access token; "
         "DEPLOYER_GITHUB_TOKEN lacks a permission, or the rate limit was hit"
     )

@@ -53,18 +53,24 @@ class GitHubSource:
         return r.text
 
     def failing_checks(self, slug: str, sha: str) -> list[str]:
+        # Workflow runs, not check runs: fine-grained tokens can't get the Checks
+        # permission, but they can get Actions read.
         r = self.client.get(
-            f"/repos/{self.org}/{slug}/commits/{sha}/check-runs",
-            params={"per_page": 100},
+            f"/repos/{self.org}/{slug}/actions/runs",
+            params={"head_sha": sha, "per_page": 100},
             headers={"Accept": "application/vnd.github+json"},
         )
-        _check(r, "reading check runs")
-        runs = r.json()["check_runs"]
-        if not runs:
-            return ["no check runs on this commit yet; wait for CI to start"]
+        _check(r, "reading workflow runs")
+        latest: dict[int, dict] = {}
+        for run in r.json()["workflow_runs"]:
+            # A workflow started again for the same commit replaces its earlier run.
+            if run["workflow_id"] not in latest or run["id"] > latest[run["workflow_id"]]["id"]:
+                latest[run["workflow_id"]] = run
+        if not latest:
+            return ["no workflow runs on this commit yet; wait for CI to start"]
         return [
             f"{run['name']}: {run['conclusion'] or run['status']}"
-            for run in runs
+            for run in latest.values()
             if run["status"] != "completed" or run["conclusion"] not in PASSING
         ]
 
