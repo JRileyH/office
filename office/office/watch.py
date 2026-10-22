@@ -69,6 +69,7 @@ class Steps:
         self.pending: dict[str, tuple[str, datetime | None]] = {}  # tool calls still running
         self.hidden: set[str] = set()  # calls of HIDDEN_TOOLS, whose results aren't shown either
         self.last: datetime | None = None  # the latest step
+        self.said = ""  # the latest thing the worker wrote
         self.ended = False  # the run's result is in
 
     def lines(self, events: list[dict]) -> list[str]:
@@ -84,7 +85,8 @@ class Steps:
             case "assistant":
                 for block in blocks:
                     if block.get("type") == "text" and str(block.get("text", "")).strip():
-                        found.append("says: " + _short(block["text"], 300))
+                        self.said = _short(block["text"], 300)
+                        found.append("says: " + self.said)
                     elif block.get("type") == "tool_use" and block.get("name") in HIDDEN_TOOLS:
                         self.hidden.add(block.get("id"))
                     elif block.get("type") == "tool_use":
@@ -116,8 +118,8 @@ class Steps:
         """What the worker is on, for how long."""
         if self.pending:
             call, at = list(self.pending.values())[-1]
-            return f"running {call}" + (f" for {_span(now - at)}" if at else "")
-        return "thinking" + (f" for {_span(now - self.last)}" if self.last else "")
+            return f"running {call}" + (f" for {span(now - at)}" if at else "")
+        return "thinking" + (f" for {span(now - self.last)}" if self.last else "")
 
 
 # --- the queue ---------------------------------------------------------------------
@@ -139,12 +141,12 @@ def job_line(settings: Settings, store: Store, job: Job, now: datetime) -> str:
     last = runs[-1] if runs else None
     state = job.state
     if job.state == "running" and last and last["outcome"] is None:
-        state = f"running for {_span(now - _time(last['started_at']))}"
+        state = f"running for {span(now - _time(last['started_at']))}"
     elif job.state == "waiting":
         state = "waiting on you: reply in its room"
     elif job.state == "parked":
         retry = _time(job.retry_at)
-        when = f"in {_span(retry - now)}" if retry and retry > now else "now"
+        when = f"in {span(retry - now)}" if retry and retry > now else "now"
         state = f"retrying {when} (last run: {last['outcome']})" if last else f"starting {when}"
     held = ", project paused" if project.paused else ""
     return (
@@ -157,7 +159,7 @@ def run_heading(run: dict) -> str:
     name = Path(run["log_path"]).name.removesuffix(".jsonl.gz")
     line = f"── job {run['job_id']} run {name} on {run['model']}, started {run['started_at'][:16].replace('T', ' ')} UTC"
     if run["outcome"]:
-        took = _span(_time(run["ended_at"]) - _time(run["started_at"]))
+        took = span(_time(run["ended_at"]) - _time(run["started_at"]))
         line += f": {run['outcome']} after {took}" + (f", {_turns(run['num_turns'])}" if run["num_turns"] else "")
     return line
 
@@ -268,7 +270,7 @@ def watch_run(
             quiet = now - modified if modified else timedelta(0)
             warning = ""
             if quiet.total_seconds() >= QUIET_SECONDS:
-                warning = f"; nothing logged for {_span(quiet)}, it may be stuck (!kill in its room stops the job)"
+                warning = f"; nothing logged for {span(quiet)}, it may be stuck (!kill in its room stops the job)"
             out(f"{'':>8}  … {steps.doing(now)}{warning}")
             said = now
         sleep(POLL_SECONDS)
@@ -346,7 +348,7 @@ def _clock(delta: timedelta) -> str:
     return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
-def _span(delta: timedelta) -> str:
+def span(delta: timedelta) -> str:
     """A duration in words: 40s, 14m, 2h05m."""
     seconds = max(int(delta.total_seconds()), 0)
     if seconds < 60:

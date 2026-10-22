@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import playbook as playbooks
@@ -18,6 +18,7 @@ from .harness import Harness, RunResult
 from .matrix import Chat
 from .prompts import Prompts
 from .store import ACTIVE, Job, Project, Store, later
+from .watch import Steps, Tail, span
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -27,6 +28,11 @@ MAX_ATTEMPTS = 3  # failed runs of one phase before asking Riggy for help
 LIMIT_RETRY = timedelta(minutes=30)
 ERROR_RETRY = timedelta(minutes=1)
 IDLE_POLL_SECONDS = 30
+MONITOR_SECONDS = 15  # how often a running phase is checked on
+HEARTBEAT_SECONDS = 20 * 60  # no news from a phase this long: say what it's on
+# Nothing logged this long and the run is stopped and retried. Claude Code logs while it
+# thinks, and its commands time out after ten minutes, so a live run is never this quiet.
+STUCK_SECONDS = 30 * 60
 # Never handed to workers: they talk to Riggy through verdicts, not as the bot,
 # and only Riggy's !delete deletes a project's data.
 WORKER_ENV_DENY = frozenset({"OFFICE_MATRIX_PASSWORD", "DEPLOYER_ADMIN_SECRET"})
@@ -168,8 +174,10 @@ class Scheduler:
         project = self.store.project(project.slug)
         log_path = self.settings.job_logs(job.id) / f"{len(self.store.runs(job.id)) + 1:03d}-{label}.jsonl.gz"
         run_id = self.store.start_run(job.id, label, f"{project.model}/{project.effort}", str(log_path))
-        try:
-            result = await self.harness.run(
+        notes = self.progress_path(job)
+        seen = notes.stat().st_size if notes.exists() else 0  # notes from earlier phases were passed on then
+        run = asyncio.create_task(
+            self.harness.run(
                 cwd=self.workspace.path(project.slug),
                 prompt=prompt,
                 model=project.model,
@@ -180,11 +188,51 @@ class Scheduler:
                 resume=resume,
                 label=label,
             )
+        )
+        monitor = asyncio.create_task(self.monitor(job, project, label, log_path, seen, run))
+        try:
+            await asyncio.wait({run})
         except asyncio.CancelledError:
+            run.cancel()
+            await asyncio.wait({run})
             self.store.finish_run(run_id, "killed")
             raise
+        finally:
+            monitor.cancel()
+        if run.cancelled():  # the monitor stopped it
+            result = RunResult("error", error=f"no sign of life for {STUCK_SECONDS // 60} minutes")
+        else:
+            result = run.result()
         self.store.finish_run(run_id, result.outcome, session_id=result.session_id, **result.usage)
         return result
+
+    async def monitor(
+        self, job: Job, project: Project, label: str, log_path: Path, seen: int, run: asyncio.Task
+    ) -> None:
+        """While a phase runs, keep Riggy posted: the worker's progress notes (past byte `seen`) as it
+        writes them, what it's on when there's been no news for a while, and a restart if it stops."""
+        notes = self.progress_path(job)
+        tail, started = Tail(log_path), datetime.now(UTC)
+        steps, news = Steps(started), started
+        phases = len(self.playbook(job.playbook).phases)
+        while True:
+            await asyncio.sleep(MONITOR_SECONDS)
+            steps.lines(tail.events())
+            now = datetime.now(UTC)
+            new, seen = _new_lines(notes, seen)
+            for note in new[-3:]:
+                await self.say(project, f"▸ {_first_line(note, 300)}", notice=True)
+                news = now
+            quiet = now - (tail.modified() or started)
+            if quiet.total_seconds() >= STUCK_SECONDS:
+                await self.say(project, f"No sign of life in {label} for {span(quiet)}, so I'm restarting it.", notice=True)
+                run.cancel()
+                return
+            if (now - news).total_seconds() >= HEARTBEAT_SECONDS:
+                said = f' Last said: "{steps.said}"' if steps.said else ""
+                where = f"{label} ({job.phase + 1}/{phases})"
+                await self.say(project, f"Still on {where}, {span(now - started)} in.{said} Now {steps.doing(now)}.", notice=True)
+                news = now
 
     async def handle(self, job: Job, project: Project, book: playbooks.Playbook, result: RunResult, note_ids: list[int]) -> None:
         if result.outcome == "limit":
@@ -247,11 +295,16 @@ class Scheduler:
     def lessons_path(self) -> Path:
         return self.settings.state_dir / "lessons.md"
 
+    def progress_path(self, job: Job) -> Path:
+        """Where the worker appends progress notes for Riggy, one line each (prompts/phase.md)."""
+        return self.settings.job_logs(job.id) / "progress.txt"
+
     def worker_env(self, project: Project, job: Job) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items() if k not in WORKER_ENV_DENY}
         env.update(
             OFFICE_SLUG=project.slug,
             OFFICE_JOB=str(job.id),
+            OFFICE_PROGRESS=str(self.progress_path(job)),
             OFFICE_URL=self.settings.project_url(project.slug),
             GITHUB_ORG=self.settings.org,
             DEPLOYER_URL=self.settings.deployer_url,
@@ -271,6 +324,19 @@ class Scheduler:
 def _first_line(text: str, limit: int = 80) -> str:
     line = text.strip().splitlines()[0] if text.strip() else ""
     return line if len(line) <= limit else line[: limit - 1] + "…"
+
+
+def _new_lines(path: Path, offset: int) -> tuple[list[str], int]:
+    """Whole lines added to the file since `offset`, and the offset after them."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            data = f.read()
+    except FileNotFoundError:
+        return [], offset
+    complete = data[: data.rfind(b"\n") + 1]
+    lines = [line.strip() for line in complete.decode(errors="replace").splitlines()]
+    return [line for line in lines if line], offset + len(complete)
 
 
 def _join(message: str, link: str) -> str:

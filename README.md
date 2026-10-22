@@ -14,6 +14,10 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   invites you to a new room for that project.
 - **The project's room:** progress shows up here as quiet notices; questions,
   the MVP check-in and "Done" arrive as messages that notify your phone.
+  - Each finished phase posts "✓ phase: what was done" and what's next.
+  - During a phase, the worker posts a "▸" note at each milestone. After 20
+    minutes without news, office says what the worker is on ("Still on mvp (3/6),
+    45m in…"). A phase that logs nothing for 30 minutes is stopped and retried.
   - When office is waiting on you, your reply is the answer ("looks good",
     "make the photos bigger").
   - While it's working, what you say is passed to the next step of the job.

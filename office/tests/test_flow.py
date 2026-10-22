@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import json
 from datetime import UTC, datetime, timedelta
 
 from conftest import Office
 
-from office import nuke
+from office import nuke, scheduler
 from office.harness import RunResult
 
 TREES = {"name": "Tree Cards", "slug": "tree-cards", "summary": "A flashcard game for northeastern US trees."}
@@ -151,7 +153,8 @@ def test_phase_prompts_are_fully_filled_in(office):
         await new_project(office, [verdict("continue")])
         await office.step()
         prompt = office.harness.calls[-1].prompt
-        assert "$" not in prompt.replace("$(", "")
+        assert '>> "$OFFICE_PROGRESS"' in prompt  # an environment variable, not a placeholder
+        assert "$" not in prompt.replace("$(", "").replace("$OFFICE_PROGRESS", "")
         assert "# This phase: spec (1 of 6)" in prompt
         assert "> a flashcard game for identifying northeastern us trees" in prompt
         assert "https://github.com/unlaunched/tree-cards/issues/1" in prompt
@@ -310,6 +313,71 @@ def test_kill_stops_the_running_phase(office):
         assert office.store.job(job.id).state == "killed"
         assert office.store.runs(job.id)[-1]["outcome"] == "killed"
         loop.cancel()
+
+    run(go())
+
+
+class Worker:
+    """A phase run by `act(log_path, env)`, which writes what a worker would."""
+
+    def __init__(self, act):
+        self.act = act
+
+    async def run(self, *, log_path, env, **kwargs):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        return await self.act(log_path, env)
+
+
+def log_event(log, event: dict) -> None:
+    log.write(json.dumps(event) + "\n")
+    log.flush()
+
+
+def test_a_running_phase_passes_on_progress_and_says_what_it_is_on(office, monkeypatch):
+    monkeypatch.setattr(scheduler, "MONITOR_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler, "HEARTBEAT_SECONDS", 0.15)
+
+    async def act(log_path, env):
+        with gzip.open(log_path, "wt") as log:
+            text = {"type": "text", "text": "Reading the brief."}
+            log_event(log, {"type": "assistant", "message": {"content": [text]}})
+            with open(env["OFFICE_PROGRESS"], "a") as notes:
+                notes.write("The spec is drafted; checking it against the idea.\n")
+            command = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "npm test"}}
+            log_event(log, {"type": "assistant", "message": {"content": [command]}})
+            await asyncio.sleep(0.4)
+        return RunResult("verdict", verdict=verdict("continue", "Spec written."))
+
+    async def go():
+        room = await new_project(office, [])
+        office.scheduler.harness = Worker(act)
+        await office.step()
+        texts = office.chat.texts(room)
+        assert "▸ The spec is drafted; checking it against the idea." in texts
+        still = [t for t in texts if t.startswith("Still on")]
+        assert still[0] == 'Still on spec (1/6), 0s in. Last said: "Reading the brief." Now running Bash npm test.'
+        assert texts[-1].startswith("✓ spec: Spec written.")
+
+    run(go())
+
+
+def test_a_phase_that_stops_doing_anything_is_restarted(office, monkeypatch):
+    monkeypatch.setattr(scheduler, "MONITOR_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler, "STUCK_SECONDS", 0.2)
+
+    async def act(log_path, env):
+        with gzip.open(log_path, "wt") as log:
+            log_event(log, {"type": "system", "subtype": "init"})
+            await asyncio.sleep(3600)
+
+    async def go():
+        room = await new_project(office, [])
+        office.scheduler.harness = Worker(act)
+        job = office.store.active_job("tree-cards")
+        await office.step()
+        assert office.chat.texts(room)[-1] == "No sign of life in spec for 0s, so I'm restarting it."
+        assert (office.store.job(job.id).state, office.store.job(job.id).attempts) == ("parked", 1)
+        assert office.store.runs(job.id)[-1]["outcome"] == "error"
 
     run(go())
 
