@@ -132,8 +132,6 @@ class Scheduler:
         else:
             lessons = self.lessons_path.read_text() if self.lessons_path.exists() else ""
             prompt, resume = self.prompts.phase(project, job, book, feedback, lessons), None
-            if job.kind == "new":
-                await self.say(project, f"Phase {job.phase + 1}/{len(book.phases)}: {phase.name}", notice=True)
 
         result = await self.execute(job, project, phase.name, phase.model, phase.max_turns, prompt, resume)
         if result.outcome == "max_turns" and result.session_id:
@@ -198,7 +196,8 @@ class Scheduler:
         match v["verdict"]:
             case "continue" if nxt < len(book.phases):
                 self.store.update_job(job.id, phase=nxt, state="queued", attempts=0, resume_session=None)
-                await self.say(project, _join(f"✓ {book.phases[job.phase].name}: {message}", link), notice=True)
+                upcoming = f"Next: {book.phases[nxt].name} ({nxt + 1}/{len(book.phases)})."
+                await self.say(project, _join(f"✓ {book.phases[job.phase].name}: {message}", link) + f"\n{upcoming}", notice=True)
             case "continue" | "done":
                 self.store.update_job(job.id, phase=len(book.phases), state="done", attempts=0, resume_session=None)
                 await self.say(project, _join(f"Done: {message}", link or self.settings.project_url(project.slug)))

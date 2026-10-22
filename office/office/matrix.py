@@ -116,13 +116,14 @@ class Matrix:
             log.warning("typing: %s", e)
 
     async def create_room(self, name: str, topic: str, alias: str | None = None) -> str:
-        """A private room with the owner invited and made admin alongside the bot."""
+        """A private room with the owner invited and made admin."""
         body = {
             "preset": "private_chat",
             "name": name,
             "topic": topic,
             "invite": [self.owner],
-            "power_level_content_override": {"users": {self.user: 100, self.owner: 100}},
+            # The bot, as creator, outranks everyone (room v12 rejects listing creators here).
+            "power_level_content_override": {"users": {self.owner: 100}},
         }
         if alias:
             body["room_alias_name"] = alias
@@ -205,6 +206,7 @@ class Matrix:
 
 def _errcode(r: httpx.Response) -> str:
     try:
-        return r.json().get("errcode", "")
+        body = r.json()
     except ValueError:
         return ""
+    return " ".join(str(body.get(k, "")) for k in ("errcode", "error")).strip()

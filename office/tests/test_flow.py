@@ -149,15 +149,19 @@ def test_a_message_in_an_idle_project_room_is_a_change_request(office):
         room = await new_project(office, [verdict("done", "Live.")])
         office.store.update_job(office.store.active_job("tree-cards").id, state="done")
 
+        said = len(office.chat.texts(room))
         await office.say(room, "i dont like how the score works, count streaks instead")
         job = office.store.active_job("tree-cards")
         assert (job.kind, job.playbook) == ("change", "feature")
-        assert office.chat.texts(room)[-1] == "Got it. Starting now."
+        assert len(office.chat.texts(room)) == said  # no "Got it": "Working on it" follows at once
 
-        office.harness.script = [verdict("continue", "PR up."), verdict("continue"), verdict("done", "Scores now count streaks.")]
+        office.harness.script = [verdict("continue", "PR up.", "https://github.com/unlaunched/tree-cards/pull/2"), verdict("continue"), verdict("done", "Scores now count streaks.")]
         await office.step()
         texts = office.chat.texts(room)
-        assert "Working on it: i dont like how the score works, count streaks instead" in texts
+        assert texts[-2:] == [
+            "Working on it: i dont like how the score works, count streaks instead",
+            "✓ change: PR up.\nhttps://github.com/unlaunched/tree-cards/pull/2\nNext: review (2/3).",
+        ]
         assert "# This phase: change (1 of 3)" in office.harness.calls[-1].prompt
         await office.step()
         await office.step()

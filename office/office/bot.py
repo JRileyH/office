@@ -31,6 +31,7 @@ HELP = """Commands (in a project's room they apply to that project):
 
 Anything else: in the inbox, a new idea; in a project's room, feedback or a change."""
 
+STARTING = "Starting now."
 INBOX_WELCOME = """This is office's inbox. Dictate an idea here and I'll turn it into a project with its own room, where I'll post check-ins and you can ask for changes. !help lists commands."""
 
 
@@ -128,7 +129,9 @@ class Bot:
         job = self.store.active_job(project.slug)
         if job is None:
             job = self.store.add_job(project.slug, "change", msg.body, "feature")
-            await self.chat.send(msg.room_id, f"Got it. {self.queue_position(job)}", notice=True)
+            position = self.queue_position(job)
+            if position != STARTING:  # otherwise "Working on it" follows straight away
+                await self.chat.send(msg.room_id, f"Got it. {position}", notice=True)
             self.scheduler.wake()
             return
         self.store.add_note(job.id, msg.body)
@@ -148,7 +151,7 @@ class Bot:
             return "This project is paused (!resume to start again)."
         current = self.scheduler.busy_with()
         if current is None or current.id == job.id:
-            return "Starting now."
+            return STARTING
         ahead = [j for j in self.store.jobs(("queued",)) if j.id != job.id and (j.priority, -j.id) >= (job.priority, -job.id)]
         busy = self.store.project(current.slug)
         others = f" and {len(ahead)} more queued" if ahead else ""

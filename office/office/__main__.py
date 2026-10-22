@@ -22,6 +22,7 @@ log = logging.getLogger("office")
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # a line per Matrix sync otherwise
     settings = Settings.from_env()
     settings.state_dir.mkdir(parents=True, exist_ok=True)
     store = Store(settings.state_dir / "office.db")
