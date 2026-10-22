@@ -202,6 +202,8 @@ def test_matrix_only_listens_to_the_owner(tmp_path):
                             event("@mallory:x", "evil"),
                             event("@office:x", "self"),
                             event(OWNER, "* edit", **{"m.relates_to": {"rel_type": "m.replace"}}),
+                            event(OWNER, "looks good", **{"m.relates_to": {"m.in_reply_to": {"event_id": "$x"}}}),
+                            event(OWNER, "> <@office:x> Try it\n\nbigger photos", **{"m.relates_to": {"m.in_reply_to": {"event_id": "$y"}}}),
                             {**event(OWNER, "note"), "content": {"msgtype": "m.notice", "body": "note"}},
                         ]
                     }
@@ -209,7 +211,7 @@ def test_matrix_only_listens_to_the_owner(tmp_path):
             }
         }
     }
-    assert [(msg.room_id, msg.body) for msg in m.messages(data)] == [("!a:x", "hello")]
+    assert [msg.body for msg in m.messages(data)] == ["hello", "looks good", "bigger photos"]
 
 
 def test_matrix_accepts_invites_from_the_owner_only(tmp_path):

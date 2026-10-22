@@ -181,9 +181,9 @@ class Matrix:
                     and event.get("sender") == self.owner
                     and content.get("msgtype") == "m.text"
                     and isinstance(content.get("body"), str)
-                    and "m.relates_to" not in content  # edits and replacements
+                    and content.get("m.relates_to", {}).get("rel_type") != "m.replace"  # edits
                 ):
-                    found.append(Message(room_id, event["sender"], content["body"].strip(), event["event_id"]))
+                    found.append(Message(room_id, event["sender"], _body(content), event["event_id"]))
         return found
 
     async def accept_invites(self, data: dict) -> None:
@@ -202,6 +202,17 @@ class Matrix:
                     await self.join(room_id)
                 except MatrixError as e:
                     log.warning("joining %s: %s", room_id, e)
+
+
+def _body(content: dict) -> str:
+    """The message text, without the quoted fallback older clients put on replies."""
+    body = content["body"]
+    if "m.in_reply_to" in content.get("m.relates_to", {}) and body.startswith("> <"):
+        lines = body.splitlines()
+        while lines and lines[0].startswith(">"):
+            lines.pop(0)
+        body = "\n".join(lines)
+    return body.strip()
 
 
 def _errcode(r: httpx.Response) -> str:
