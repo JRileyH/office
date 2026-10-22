@@ -23,6 +23,7 @@ class Settings:
     git_dir: Path  # bare repos, local mode only
     inner_traefik_url: str
     policy: Policy
+    edge_port: str = ""  # local mode's edge isn't on 80; only used in reported URLs
 
     @classmethod
     def from_env(cls, env: dict[str, str] = os.environ) -> Settings:
@@ -53,4 +54,5 @@ class Settings:
                 service_mem_cap_mb=int(env.get("DEPLOYER_SERVICE_MEM_CAP_MB", "512")),
                 project_mem_cap_mb=int(env.get("DEPLOYER_PROJECT_MEM_CAP_MB", "1024")),
             ),
+            edge_port=env.get("EDGE_PORT", ""),
         )

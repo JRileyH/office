@@ -1,0 +1,21 @@
+# The same routing the VPS edge gets from labels, for *.localhost.
+http:
+  routers:
+    matrix:
+      rule: Host(`matrix.localhost`)
+      entryPoints: [web]
+      service: tuwunel
+    apps:
+      rule: HostRegexp(`^[a-z0-9-]+\.localhost$`)
+      priority: 1
+      entryPoints: [web]
+      service: inner-traefik
+  services:
+    tuwunel:
+      loadBalancer:
+        servers:
+          - url: http://tuwunel:8008
+    inner-traefik:
+      loadBalancer:
+        servers:
+          - url: http://inner-traefik:80

@@ -1,0 +1,14 @@
+# Local stand-in for the VPS edge (compose profile `standalone`). Plain HTTP
+# on :80, file provider only: on the Mac nothing reads the edge labels.
+log:
+  level: INFO
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      aliasHeadersStrategy: delete
+
+providers:
+  file:
+    filename: /etc/traefik/routes.yml

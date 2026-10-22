@@ -141,7 +141,8 @@ class Deployer:
 
     def url(self, slug: str) -> str:
         scheme = "http" if self.settings.base_domain == "localhost" else "https"
-        return f"{scheme}://{slug}.{self.settings.base_domain}"
+        port = f":{self.settings.edge_port}" if self.settings.edge_port else ""
+        return f"{scheme}://{slug}.{self.settings.base_domain}{port}"
 
 
 def _now() -> str:

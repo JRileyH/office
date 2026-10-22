@@ -1,0 +1,155 @@
+# office: one stack, portable between boxes. Settings come from .env.
+#
+#   Internet -> edge Traefik (~/web/proxy, owns 80/443 and TLS)
+#     matrix.<domain>             -> tuwunel        (label router below)
+#     *.<domain> (priority 1)     -> inner-traefik  -> office.<domain> -> office
+#                                                   -> <slug>.<domain> -> project stacks
+#
+# Locally, COMPOSE_PROFILES=standalone runs `edge` in place of the VPS edge.
+
+name: office
+
+services:
+  office:
+    build:
+      context: .
+      dockerfile: office/Dockerfile
+    image: office-office
+    restart: unless-stopped
+    mem_limit: 1536m  # one cap for the service and every worker it runs
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN:?set BASE_DOMAIN in .env}
+      HARNESS: ${HARNESS:-claude}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      DEPLOYER_URL: http://deployer:8000
+      DEPLOYER_SECRET: ${DEPLOYER_SECRET:?set DEPLOYER_SECRET in .env}
+    volumes:
+      - office-state:/var/lib/office
+      - office-claude:/home/office/.claude
+      - office-workspace:/workspace
+      - office-cache:/home/office/.cache
+    # Not on `web`: workers run in here and must not reach the neighbor stacks.
+    networks: [office-internal]
+
+  deployer:
+    build: ./deployer
+    image: office-deployer
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN}
+      EDGE_PORT: ${EDGE_PORT:-}
+      GITHUB_ORG: ${GITHUB_ORG:-unlaunched}
+      DEPLOYER_SECRET: ${DEPLOYER_SECRET}
+      DEPLOYER_GIT_SOURCE: ${DEPLOYER_GIT_SOURCE:-github}
+      DEPLOYER_GITHUB_TOKEN: ${DEPLOYER_GITHUB_TOKEN:-}
+      DEPLOYER_REQUIRE_CHECKS: ${DEPLOYER_REQUIRE_CHECKS:-true}
+      DEPLOYER_SERVICE_MEM_CAP_MB: ${DEPLOYER_SERVICE_MEM_CAP_MB:-512}
+      DEPLOYER_PROJECT_MEM_CAP_MB: ${DEPLOYER_PROJECT_MEM_CAP_MB:-1024}
+    volumes:
+      # The only container with the Docker socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - deployer-data:/data
+      - routes:/routes
+      # Local mode's bare repos; an empty directory on the VPS.
+      - ${LOCAL_GIT_DIR:-./var/git}:/git:ro
+    # Only on the internal network: project containers can't reach it.
+    networks: [office-internal]
+
+  inner-traefik:
+    image: traefik:v3.7.16
+    restart: unless-stopped
+    mem_limit: 128m
+    volumes:
+      - ./traefik/inner.yml:/etc/traefik/traefik.yml:ro
+      # Read-only here; the deployer writes <slug>.yml. Traefik reads subdirectories.
+      - routes:/etc/traefik/dynamic/projects:ro
+    configs:
+      - source: office-route
+        target: /etc/traefik/dynamic/office.yml
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+    networks: [web, office-apps, office-internal]
+    labels:
+      # Catch-all on the edge for *.<domain>. Specific routers (matrix., the
+      # neighbors' hosts) win; priority 1 makes this the last resort.
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.office-apps.rule=HostRegexp(`^[a-z0-9-]+\\.${BASE_DOMAIN}$$`)"
+      - "traefik.http.routers.office-apps.priority=1"
+      - "traefik.http.routers.office-apps.entrypoints=websecure"
+      - "traefik.http.routers.office-apps.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.office-apps.tls.domains[0].main=${BASE_DOMAIN}"
+      - "traefik.http.routers.office-apps.tls.domains[0].sans=*.${BASE_DOMAIN}"
+      - "traefik.http.services.office-apps.loadbalancer.server.port=80"
+
+  tuwunel:
+    image: ghcr.io/matrix-construct/tuwunel:v1.9.4
+    restart: unless-stopped
+    mem_limit: 384m
+    stop_grace_period: 30m  # let database migrations finish
+    environment:
+      # server_name can't change without wiping the database.
+      TUWUNEL_SERVER_NAME: matrix.${BASE_DOMAIN}
+      TUWUNEL_ADDRESS: 0.0.0.0
+      TUWUNEL_ALLOW_FEDERATION: "false"
+      TUWUNEL_ALLOW_REGISTRATION: "false"
+      TUWUNEL_TRUSTED_SERVERS: "[]"
+      TUWUNEL_NEW_USER_DISPLAYNAME_SUFFIX: ""
+      TUWUNEL_WELL_KNOWN__CLIENT: ${MATRIX_PUBLIC_URL:-https://matrix.${BASE_DOMAIN}}
+    volumes:
+      - tuwunel-db:/var/lib/tuwunel
+    networks: [web, office-internal]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.office-matrix.rule=Host(`matrix.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.office-matrix.entrypoints=websecure"
+      - "traefik.http.routers.office-matrix.tls.certresolver=letsencrypt"
+      - "traefik.http.services.office-matrix.loadbalancer.server.port=8008"
+
+  edge:
+    profiles: [standalone]
+    image: traefik:v3.7.16
+    restart: unless-stopped
+    mem_limit: 64m
+    ports:
+      - "${EDGE_PORT:-80}:80"
+    volumes:
+      - ./traefik/edge-local.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/edge-local-routes.yml:/etc/traefik/routes.yml:ro
+    networks: [web]
+
+configs:
+  office-route:
+    content: |
+      http:
+        routers:
+          office:
+            rule: Host(`office.${BASE_DOMAIN}`)
+            entryPoints: [web]
+            service: office
+        services:
+          office:
+            loadBalancer:
+              servers:
+                - url: http://office:8000
+
+networks:
+  web:
+    external: true
+  office-internal:
+    name: office-internal
+  office-apps:
+    # Fixed name: the deployer attaches project public services to it.
+    name: office-apps
+
+volumes:
+  office-state:
+  office-claude:
+  office-workspace:
+  office-cache:
+  deployer-data:
+  routes:
+  tuwunel-db:

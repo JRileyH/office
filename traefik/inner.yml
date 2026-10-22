@@ -1,0 +1,27 @@
+# Inner Traefik: routes agent projects only. File provider only, no Docker
+# socket: the deployer writes one <slug>.yml per project into dynamic/.
+log:
+  level: INFO
+
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      # Only the edge (and the internal networks) can reach this entrypoint;
+      # keep the edge's X-Forwarded-Proto so apps know they're behind HTTPS.
+      insecure: true
+    http:
+      # Drop headers like X_Forwarded_Proto that some backends read as X-Forwarded-Proto.
+      aliasHeadersStrategy: delete
+  ping:
+    address: ":8082"
+    http:
+      aliasHeadersStrategy: delete
+
+ping:
+  entryPoint: ping
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
