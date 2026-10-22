@@ -64,6 +64,9 @@ PUBLIC_LABEL = "office.public"
 PORT_LABEL = "office.port"
 
 NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*")
+# No dots or capitals: a project's public service gets the alias `<slug>.office`
+# on the shared apps network, and no service or container name may collide with it.
+SERVICE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
 SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)([bkmg]?)b?", re.IGNORECASE)
 SIZE_UNITS = {"": 1, "b": 1, "k": 1024, "m": MIB, "g": 1024 * MIB}
 
@@ -218,8 +221,8 @@ class _Validator:
 
         public, total_mem = [], 0
         for name, spec in services.items():
-            if not NAME_RE.fullmatch(name):
-                self.reject(f"service name `{name}` is invalid")
+            if not SERVICE_NAME_RE.fullmatch(name):
+                self.reject(f"service name `{name}` is invalid (lowercase letters, digits, `-` and `_`)")
             if not isinstance(spec, dict):
                 self.reject(f"service `{name}` must be a mapping")
                 continue

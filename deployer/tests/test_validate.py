@@ -292,6 +292,12 @@ def test_service_rules(extra, reason):
     assert reasons_for(HELLO + extra) == [reason]
 
 
+@pytest.mark.parametrize("name", ["hello.office", "Web", "-web", "a" * 64])
+def test_service_names(name):
+    text = HELLO.replace("  web:", f"  {name}:")
+    assert reasons_for(text) == [f"service name `{name}` is invalid (lowercase letters, digits, `-` and `_`)"]
+
+
 def test_docker_labels_are_reserved():
     text = HELLO.replace("labels: {", "labels: {com.docker.compose.project: misg, ")
     assert reasons_for(text) == [
