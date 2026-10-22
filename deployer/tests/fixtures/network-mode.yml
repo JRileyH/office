@@ -1,0 +1,8 @@
+services:
+  web:
+    image: ghcr.io/unlaunched/hello:1
+    mem_limit: 64m
+    network_mode: host
+    labels:
+      office.public: "true"
+      office.port: "80"
