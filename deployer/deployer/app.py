@@ -14,6 +14,7 @@ from starlette.routing import Route
 
 from .audit import Audit
 from .deploy import Deployer, DeployFailed
+from .source import GitHubError
 from .validate import Rejected
 
 SECRET_HEADER = "X-Deployer-Secret"
@@ -39,6 +40,9 @@ def create_app(deployer: Deployer, audit: Audit, secret: str) -> Starlette:
         except DeployFailed as e:
             audit.write(action, "failed", **fields, error=e.message)
             return JSONResponse({"ok": False, "error": e.message, "logs": e.logs}, 502)
+        except GitHubError as e:
+            audit.write(action, "failed", **fields, error=str(e))
+            return JSONResponse({"ok": False, "error": str(e)}, 502)
         except Exception as e:
             audit.write(action, "error", **fields, error=type(e).__name__)
             return JSONResponse({"ok": False, "error": f"internal error ({type(e).__name__})"}, 500)

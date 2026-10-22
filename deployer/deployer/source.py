@@ -12,6 +12,14 @@ from .validate import Rejected
 
 COMPOSE_PATH = "deploy/compose.yml"
 PASSING = frozenset({"success", "neutral", "skipped"})
+HINTS = {
+    401: "DEPLOYER_GITHUB_TOKEN is invalid or expired",
+    403: "DEPLOYER_GITHUB_TOKEN lacks a permission, or the rate limit was hit",
+}
+
+
+class GitHubError(Exception):
+    """GitHub refused or failed a request: a configuration problem, not a bad project."""
 
 
 class Source(Protocol):
@@ -41,7 +49,7 @@ class GitHubSource:
         )
         if r.status_code == 404:
             raise Rejected([f"{COMPOSE_PATH} not found in {self.org}/{slug} at {sha}; is the commit pushed?"])
-        r.raise_for_status()
+        _check(r, f"reading {COMPOSE_PATH}")
         return r.text
 
     def failing_checks(self, slug: str, sha: str) -> list[str]:
@@ -50,7 +58,7 @@ class GitHubSource:
             params={"per_page": 100},
             headers={"Accept": "application/vnd.github+json"},
         )
-        r.raise_for_status()
+        _check(r, "reading check runs")
         runs = r.json()["check_runs"]
         if not runs:
             return ["no check runs on this commit yet; wait for CI to start"]
@@ -59,6 +67,17 @@ class GitHubSource:
             for run in runs
             if run["status"] != "completed" or run["conclusion"] not in PASSING
         ]
+
+
+def _check(r: httpx.Response, doing: str) -> None:
+    if r.is_success:
+        return
+    try:
+        detail = r.json().get("message", "")
+    except ValueError:
+        detail = ""
+    parts = [f"GitHub returned {r.status_code} {doing}", detail, HINTS.get(r.status_code, "")]
+    raise GitHubError("; ".join(p for p in parts if p))
 
 
 class LocalSource:

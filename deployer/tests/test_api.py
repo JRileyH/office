@@ -11,7 +11,7 @@ from deployer.app import create_app
 from deployer.audit import Audit
 from deployer.config import Settings
 from deployer.deploy import Deployer
-from deployer.source import GitHubSource
+from deployer.source import GitHubError, GitHubSource
 from deployer.validate import Policy, Project, Rejected
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -297,3 +297,15 @@ def test_github_failing_checks(runs, failing):
         return httpx.Response(200, json={"total_count": len(runs), "check_runs": runs})
 
     assert github(handler).failing_checks("hello", SHA) == failing
+
+
+def test_github_errors_explain_themselves():
+    def handler(request):
+        return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+
+    with pytest.raises(GitHubError) as e:
+        github(handler).failing_checks("hello", SHA)
+    assert str(e.value) == (
+        "GitHub returned 403 reading check runs; Resource not accessible by personal access token; "
+        "DEPLOYER_GITHUB_TOKEN lacks a permission, or the rate limit was hit"
+    )
