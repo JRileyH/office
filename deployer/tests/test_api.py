@@ -59,6 +59,8 @@ class Harness:
             git_source="github",
             org="unlaunched",
             github_token="token",
+            registry_user="riggy",
+            registry_token="token",
             require_checks=require_checks,
             pull_policy="always",
             data_dir=tmp,
@@ -109,6 +111,7 @@ def test_deploy_writes_override_route_and_state(tmp_path, valid):
     assert override["services"]["db"]["labels"] == {"traefik.enable": "false", "office.slug": "hello"}
     assert override["services"]["web"]["networks"]["office-apps"] == {"aliases": ["hello.office"]}
     assert "networks" not in override["services"]["db"]
+    assert "image" not in override["services"]["web"]  # already tagged in the fixture
 
     route = yaml.safe_load((tmp_path / "routes" / "hello.yml").read_text())
     assert route["http"]["routers"]["hello"]["rule"] == "Host(`hello.unlaunched.dev`)"
@@ -227,7 +230,26 @@ def test_route_and_override_shapes():
             "services": {"hello": {"loadBalancer": {"servers": [{"url": "http://hello.office:80"}]}}},
         }
     }
-    assert compose.override("hello", project)["networks"] == {"office-apps": {"external": True, "name": "office-apps"}}
+    assert compose.override("hello", SHA, "unlaunched", project)["networks"] == {
+        "office-apps": {"external": True, "name": "office-apps"}
+    }
+
+
+def test_own_untagged_images_are_pinned_to_the_commit():
+    images = {
+        "web": "ghcr.io/unlaunched/hello",
+        "worker": "ghcr.io/unlaunched/hello/worker",
+        "tagged": "ghcr.io/unlaunched/hello:v1",
+        "other": "ghcr.io/unlaunched/trees",
+        "lookalike": "ghcr.io/unlaunched/hello-admin",
+        "db": "postgres:18",
+    }
+    project = Project(tuple(images), "web", 80, images)
+    services = compose.override("hello", SHA, "unlaunched", project)["services"]
+    assert services["web"]["image"] == f"ghcr.io/unlaunched/hello:{SHA}"
+    assert services["worker"]["image"] == f"ghcr.io/unlaunched/hello/worker:{SHA}"
+    for name in ("tagged", "other", "lookalike", "db"):
+        assert "image" not in services[name]
 
 
 # --- GitHub source ---------------------------------------------------------------

@@ -13,7 +13,7 @@ def main() -> None:
     docker = Docker(settings.data_dir / "projects", settings.pull_policy)
     if settings.git_source == "github":
         source = GitHubSource(settings.org, settings.github_token)
-        docker.login("ghcr.io", settings.github_token)
+        docker.login("ghcr.io", settings.registry_user, settings.registry_token)
     else:
         source = LocalSource(settings.git_dir)
     settings.routes_dir.mkdir(parents=True, exist_ok=True)

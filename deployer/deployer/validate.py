@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import yaml
 
@@ -106,6 +106,7 @@ class Project:
     services: tuple[str, ...]
     public_service: str
     public_port: int
+    images: dict[str, str] = field(default_factory=dict, compare=False)
 
 
 def check_slug(slug: object) -> str:
@@ -243,7 +244,8 @@ class _Validator:
             return None
         if public[0].port is None:
             return None
-        return Project(tuple(services), public[0].name, public[0].port)
+        images = {name: spec["image"] for name, spec in services.items()}
+        return Project(tuple(services), public[0].name, public[0].port, images)
 
     def check_strings(self, doc: dict) -> None:
         """No ${VAR} interpolation anywhere: it would read the deployer's own environment."""

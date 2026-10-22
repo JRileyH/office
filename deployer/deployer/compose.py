@@ -30,8 +30,9 @@ def network_alias(slug: str) -> str:
     return f"{slug}.office"
 
 
-def override(slug: str, project: Project) -> dict:
-    """What the deployer layers over every project: no edge routing, logs rotated, public service on the apps network."""
+def override(slug: str, sha: str, org: str, project: Project) -> dict:
+    """What the deployer layers over every project: no edge routing, logs rotated,
+    public service on the apps network, and the project's own images pinned to the commit."""
     services = {
         name: {
             "labels": {"traefik.enable": "false", "office.slug": slug},
@@ -40,6 +41,12 @@ def override(slug: str, project: Project) -> dict:
         }
         for name in project.services
     }
+    # CI tags images with the commit sha. A compose file can't know its own
+    # commit, so agents reference their images untagged and the deployer pins them.
+    own = f"ghcr.io/{org}/{slug}"
+    for name, image in project.images.items():
+        if image == own or (image.startswith(own + "/") and ":" not in image and "@" not in image):
+            services[name]["image"] = f"{image}:{sha}"
     services[project.public_service]["networks"] = {
         "default": {},
         APPS_NETWORK: {"aliases": [network_alias(slug)]},
@@ -80,9 +87,9 @@ class Docker:
     def dir(self, slug: str) -> Path:
         return self.projects_dir / slug
 
-    def login(self, registry: str, token: str) -> None:
+    def login(self, registry: str, user: str, token: str) -> None:
         result = subprocess.run(
-            ["docker", "login", registry, "--username", "office-deployer", "--password-stdin"],
+            ["docker", "login", registry, "--username", user, "--password-stdin"],
             input=token,
             capture_output=True,
             text=True,

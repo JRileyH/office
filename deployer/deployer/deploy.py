@@ -58,7 +58,7 @@ class Deployer:
         project = validate_compose(text, self.settings.policy)
 
         try:
-            self.docker.up(slug, text, compose.override(slug, project))
+            self.docker.up(slug, text, compose.override(slug, sha, self.settings.org, project))
         except compose.ComposeError as e:
             raise DeployFailed(str(e), e.output) from None
 

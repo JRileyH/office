@@ -87,8 +87,10 @@ esac
 
 missing=()
 [[ -n $(get CLAUDE_CODE_OAUTH_TOKEN) ]] || missing+=(CLAUDE_CODE_OAUTH_TOKEN)
-if [[ $mode == vps && -z $(get DEPLOYER_GITHUB_TOKEN) ]]; then
-  missing+=(DEPLOYER_GITHUB_TOKEN)
+if [[ $mode == vps ]]; then
+  for key in DEPLOYER_GITHUB_TOKEN DEPLOYER_REGISTRY_USER DEPLOYER_REGISTRY_TOKEN; do
+    [[ -n $(get "$key") ]] || missing+=("$key")
+  done
 fi
 if (( ${#missing[@]} )); then
   echo "still to fill in by hand in .env: ${missing[*]}" >&2

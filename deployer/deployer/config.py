@@ -15,7 +15,9 @@ class Settings:
     base_domain: str
     git_source: str  # "github" or "local"
     org: str
-    github_token: str
+    github_token: str  # fine-grained, read-only: contents and checks
+    registry_user: str
+    registry_token: str  # classic, read:packages only: ghcr.io doesn't accept fine-grained tokens
     require_checks: bool
     pull_policy: str  # "always" on the VPS; "missing" locally, where images are built by hand
     data_dir: Path  # project files, deploy state and the audit log
@@ -34,8 +36,16 @@ class Settings:
         if git_source not in ("github", "local"):
             raise SystemExit("DEPLOYER_GIT_SOURCE must be github or local")
         github_token = env.get("DEPLOYER_GITHUB_TOKEN", "")
-        if git_source == "github" and not github_token:
-            raise SystemExit("DEPLOYER_GITHUB_TOKEN must be set when DEPLOYER_GIT_SOURCE=github")
+        registry_user = env.get("DEPLOYER_REGISTRY_USER", "")
+        registry_token = env.get("DEPLOYER_REGISTRY_TOKEN", "")
+        if git_source == "github":
+            for name, value in [
+                ("DEPLOYER_GITHUB_TOKEN", github_token),
+                ("DEPLOYER_REGISTRY_USER", registry_user),
+                ("DEPLOYER_REGISTRY_TOKEN", registry_token),
+            ]:
+                if not value:
+                    raise SystemExit(f"{name} must be set when DEPLOYER_GIT_SOURCE=github")
         org = env.get("GITHUB_ORG", "unlaunched")
         return cls(
             secret=secret,
@@ -43,6 +53,8 @@ class Settings:
             git_source=git_source,
             org=org,
             github_token=github_token,
+            registry_user=registry_user,
+            registry_token=registry_token,
             require_checks=env.get("DEPLOYER_REQUIRE_CHECKS", "true").lower() == "true",
             pull_policy="always" if git_source == "github" else "missing",
             data_dir=Path(env.get("DEPLOYER_DATA_DIR", "/data")),
