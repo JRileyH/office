@@ -15,6 +15,12 @@ config files never change.
    fine-grained tokens. Goes in `DEPLOYER_REGISTRY_TOKEN`, with your GitHub
    username in `DEPLOYER_REGISTRY_USER`.
 
+**DNS (Cloudflare, `unlaunched.dev` zone):** an `A` record `*` → stonehenge's
+IP, proxied like the apex. Check from anywhere:
+`python3 -c "import socket; print(socket.gethostbyname('x.unlaunched.dev'))"`.
+The edge's `CF_DNS_API_TOKEN` must also be allowed to edit this zone, or the
+wildcard certificate can't be issued.
+
 **hello on GitHub:** `unlaunched/hello` has the contents of `examples/hello`
 on `main`, its `build` workflow is green, and the package
 `ghcr.io/unlaunched/hello` exists. Note the commit sha.
