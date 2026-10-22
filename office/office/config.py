@@ -71,6 +71,10 @@ class Settings:
     def repo_url(self, slug: str) -> str:
         return f"https://github.com/{self.org}/{slug}"
 
+    def job_logs(self, job_id: int) -> Path:
+        """Where a job's runs are logged, one compressed event stream per run."""
+        return self.state_dir / "jobs" / str(job_id)
+
 
 def _choice(env: dict[str, str], name: str, default: str, allowed: tuple[str, ...]) -> str:
     value = env.get(name) or default

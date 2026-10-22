@@ -38,7 +38,9 @@ async def main() -> None:
     chat = Matrix(settings.matrix_url, settings.matrix_user, settings.matrix_password, settings.owner, store)
     prompts = Prompts(settings)
     scheduler = Scheduler(settings, store, chat, harness, workspace, prompts)
-    deployer = DeployerClient(settings.deployer_url, os.environ.get("DEPLOYER_SECRET", ""))
+    deployer = DeployerClient(
+        settings.deployer_url, os.environ.get("DEPLOYER_SECRET", ""), os.environ.get("DEPLOYER_ADMIN_SECRET", "")
+    )
     bot = Bot(settings, store, chat, scheduler, harness, workspace, prompts, deployer)
 
     server = uvicorn.Server(uvicorn.Config(create_app(settings, store, scheduler), host="0.0.0.0", port=8000, access_log=False))

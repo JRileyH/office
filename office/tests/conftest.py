@@ -8,6 +8,7 @@ import pytest
 
 from office.bot import Bot
 from office.config import Settings
+from office.deployer_client import DeployerError
 from office.harness import FakeHarness
 from office.matrix import Message
 from office.prompts import Prompts
@@ -29,7 +30,7 @@ class FakeChat:
         self.names: dict[str, str] = {}
         self.topics: dict[str, str] = {}
         self.aliases: list[tuple[str, str]] = []
-
+        self.closed: list[tuple[str, str]] = []
 
     async def send(self, room_id: str, text: str, notice: bool = False) -> str:
         self.sent.append((room_id, text, notice))
@@ -52,6 +53,9 @@ class FakeChat:
     async def add_alias(self, room_id: str, alias: str) -> None:
         self.aliases.append((room_id, alias))
 
+    async def close_room(self, room_id: str, reason: str) -> None:
+        self.closed.append((room_id, reason))
+
     def texts(self, room_id: str) -> list[str]:
         return [text for room, text, _ in self.sent if room == room_id]
 
@@ -59,9 +63,22 @@ class FakeChat:
 class FakeDeployer:
     def __init__(self):
         self.stopped: list[str] = []
+        self.deleted: list[str] = []
+        self.deployed: list[str] = []  # what /projects lists
+        self.fail: str | None = None  # set to make deletes fail with this reason
 
     async def stop(self, slug: str) -> None:
         self.stopped.append(slug)
+
+    async def delete(self, slug: str) -> None:
+        if self.fail:
+            raise DeployerError(self.fail)
+        self.deleted.append(slug)
+        if slug in self.deployed:
+            self.deployed.remove(slug)
+
+    async def projects(self) -> list[str]:
+        return list(self.deployed)
 
 
 class Office:

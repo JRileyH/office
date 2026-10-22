@@ -194,6 +194,18 @@ class Store:
             self.db.execute("UPDATE projects SET room_id = ? WHERE slug = ?", (room, new))
         return self.project(new)
 
+    def delete_project(self, slug: str) -> list[int]:
+        """Remove a project with its jobs, notes and runs. Returns the job ids (their logs go too)."""
+        jobs = "SELECT id FROM jobs WHERE slug = ?"
+        with self.db:
+            self.db.execute("BEGIN")
+            ids = [r["id"] for r in self.db.execute(jobs, (slug,))]
+            self.db.execute(f"DELETE FROM notes WHERE job_id IN ({jobs})", (slug,))
+            self.db.execute(f"DELETE FROM runs WHERE job_id IN ({jobs})", (slug,))
+            self.db.execute("DELETE FROM jobs WHERE slug = ?", (slug,))
+            self.db.execute("DELETE FROM projects WHERE slug = ?", (slug,))
+        return ids
+
     # --- jobs -----------------------------------------------------------------
 
     def add_job(self, slug: str, kind: str, request: str, playbook: str, priority: int = 0) -> Job:

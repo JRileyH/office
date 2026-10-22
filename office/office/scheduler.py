@@ -17,7 +17,7 @@ from .config import Settings
 from .harness import Harness, RunResult
 from .matrix import Chat
 from .prompts import Prompts
-from .store import Job, Project, Store, later
+from .store import ACTIVE, Job, Project, Store, later
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
@@ -76,6 +76,15 @@ class Scheduler:
         if self.current and self.current[0] == job_id:
             self.current[1].cancel()
         return True
+
+    async def drop_project(self, slug: str) -> None:
+        """Kill the project's unfinished jobs and wait for a running phase to stop."""
+        current = self.current
+        for job in self.store.jobs(ACTIVE):
+            if job.slug == slug:
+                self.kill(job.id)
+        if current and self.store.job(current[0]).slug == slug:
+            await asyncio.wait({current[1]})
 
     # --- loop -----------------------------------------------------------------
 
@@ -157,7 +166,7 @@ class Scheduler:
     ) -> RunResult:
         """One run of the phase, with the project's current model and effort."""
         project = self.store.project(project.slug)
-        log_path = self.settings.state_dir / "jobs" / str(job.id) / f"{len(self.store.runs(job.id)) + 1:03d}-{label}.jsonl.gz"
+        log_path = self.settings.job_logs(job.id) / f"{len(self.store.runs(job.id)) + 1:03d}-{label}.jsonl.gz"
         run_id = self.store.start_run(job.id, label, f"{project.model}/{project.effort}", str(log_path))
         try:
             result = await self.harness.run(

@@ -9,14 +9,23 @@ import httpx
 
 log = logging.getLogger(__name__)
 
+NOT_DEPLOYED = "has not been deployed"
+
+
+class DeployerError(Exception):
+    pass
+
 
 class Deployer(Protocol):
     async def stop(self, slug: str) -> None: ...
+    async def delete(self, slug: str) -> None: ...
+    async def projects(self) -> list[str]: ...
 
 
 class DeployerClient:
-    def __init__(self, url: str, secret: str, client: httpx.AsyncClient | None = None):
+    def __init__(self, url: str, secret: str, admin_secret: str = "", client: httpx.AsyncClient | None = None):
         self.client = client or httpx.AsyncClient(base_url=url, headers={"X-Deployer-Secret": secret}, timeout=120)
+        self.admin_secret = admin_secret
 
     async def stop(self, slug: str) -> None:
         """Stop a project, keeping its data. Not having been deployed is fine."""
@@ -25,5 +34,34 @@ class DeployerClient:
         except httpx.HTTPError as e:
             log.warning("stopping %s: %s", slug, e)
             return
-        if r.status_code != 200 and "has not been deployed" not in r.text:
+        if r.status_code != 200 and NOT_DEPLOYED not in r.text:
             log.warning("stopping %s: %s %s", slug, r.status_code, r.text[:300])
+
+    async def delete(self, slug: str) -> None:
+        """Take a project down and delete its data and route. Not having been deployed is fine."""
+        try:
+            r = await self.client.post(
+                "/delete", json={"slug": slug}, headers={"X-Deployer-Admin-Secret": self.admin_secret}
+            )
+        except httpx.HTTPError as e:
+            raise DeployerError(f"the deployer didn't answer ({type(e).__name__})") from None
+        if r.status_code != 200 and NOT_DEPLOYED not in r.text:
+            raise DeployerError(_problem(r))
+
+    async def projects(self) -> list[str]:
+        """Every project the deployer has deploy files for, running or stopped."""
+        try:
+            r = await self.client.get("/projects")
+        except httpx.HTTPError as e:
+            raise DeployerError(f"the deployer didn't answer ({type(e).__name__})") from None
+        if r.status_code != 200:
+            raise DeployerError(_problem(r))
+        return r.json()["projects"]
+
+
+def _problem(r: httpx.Response) -> str:
+    try:
+        body = r.json()
+    except ValueError:
+        return f"the deployer said {r.status_code}"
+    return "; ".join(body.get("reasons") or [body.get("error") or f"the deployer said {r.status_code}"])

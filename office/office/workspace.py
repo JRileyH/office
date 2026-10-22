@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 from typing import Protocol
 
@@ -24,6 +25,18 @@ class Workspace(Protocol):
     async def open_issue(self, slug: str, title: str, body: str) -> int | None: ...
     async def repo_exists(self, slug: str) -> bool: ...
     async def move_repo(self, old: str, new: str, description: str) -> Path: ...
+    async def remove(self, slug: str) -> None: ...
+
+
+async def remove_tree(path: Path) -> None:
+    """Delete a checkout (or any directory). Has to succeed: a stale checkout would be
+    reused by the next project with the same slug."""
+    try:
+        await asyncio.to_thread(shutil.rmtree, path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        raise WorkspaceError(f"removing {path}: {e}") from None
 
 
 async def run(*args: str, cwd: Path | None = None) -> tuple[int, str]:
@@ -82,6 +95,10 @@ class GitHubWorkspace:
         path.rename(target)
         return target
 
+    async def remove(self, slug: str) -> None:
+        """Delete the checkout. The repo stays: the token can't delete repos."""
+        await remove_tree(self.path(slug))
+
     async def sync_main(self, slug: str) -> None:
         """Start a job from the latest main. Best effort: an empty repo or local changes leave it alone."""
         path = self.path(slug)
@@ -136,6 +153,9 @@ class LocalWorkspace:
         else:
             target.mkdir(parents=True, exist_ok=True)
         return target
+
+    async def remove(self, slug: str) -> None:
+        await remove_tree(self.path(slug))
 
     async def sync_main(self, slug: str) -> None:
         pass

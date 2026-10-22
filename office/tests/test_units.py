@@ -14,6 +14,7 @@ from conftest import OWNER, REPO
 
 from office import deploy_cli, intake
 from office import playbook as playbooks
+from office.deployer_client import DeployerClient, DeployerError
 from office.harness import ClaudeHarness, interpret
 from office.matrix import Matrix
 from office.store import Store
@@ -231,6 +232,85 @@ def test_matrix_accepts_invites_from_the_owner_only(tmp_path):
 
     asyncio.run(m.accept_invites({"rooms": {"invite": {"!dm:x": invite(OWNER), "!spam:x": invite("@mallory:x")}}}))
     assert joined == ["/_matrix/client/v3/join/%21dm%3Ax"]
+
+
+def test_matrix_close_room_frees_aliases_removes_the_owner_and_leaves(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.raw_path.decode().removeprefix("/_matrix/client/v3")))
+        if request.url.path.endswith("/aliases"):
+            return httpx.Response(200, json={"aliases": ["#trees:x", "#old-trees:x"]})
+        if request.url.path.endswith("/kick"):
+            assert json.loads(request.content) == {"user_id": OWNER, "reason": "Trees was deleted."}
+            return httpx.Response(403, json={"errcode": "M_FORBIDDEN"})  # best effort: carry on
+        return httpx.Response(200, json={})
+
+    m = matrix(tmp_path, handler)
+    m.token = "tok"
+    asyncio.run(m.close_room("!r:x", "Trees was deleted."))
+    assert calls == [
+        ("GET", "/rooms/%21r%3Ax/aliases"),
+        ("DELETE", "/directory/room/%23trees%3Ax"),
+        ("DELETE", "/directory/room/%23old-trees%3Ax"),
+        ("POST", "/rooms/%21r%3Ax/kick"),
+        ("POST", "/rooms/%21r%3Ax/leave"),
+        ("POST", "/rooms/%21r%3Ax/forget"),
+    ]
+
+
+# --- deployer client ----------------------------------------------------------
+
+
+def deployer(handler) -> DeployerClient:
+    client = httpx.AsyncClient(
+        base_url="http://deployer:8000", headers={"X-Deployer-Secret": "s"}, transport=httpx.MockTransport(handler)
+    )
+    return DeployerClient("http://deployer:8000", "s", "admin", client)
+
+
+def test_deployer_client_deletes_with_the_admin_secret():
+    seen = []
+
+    def handler(request):
+        seen.append(request.headers.get("x-deployer-admin-secret"))
+        if json.loads(request.content)["slug"] == "never":
+            return httpx.Response(422, json={"ok": False, "reasons": ["`never` has not been deployed"]})
+        if json.loads(request.content)["slug"] == "off":
+            return httpx.Response(403, json={"ok": False, "reasons": ["deleting is off: DEPLOYER_ADMIN_SECRET is not set"]})
+        return httpx.Response(200, json={"ok": True, "deleted": "trees"})
+
+    d = deployer(handler)
+    asyncio.run(d.delete("trees"))
+    asyncio.run(d.delete("never"))  # nothing to delete is fine
+    with pytest.raises(DeployerError, match="^deleting is off: DEPLOYER_ADMIN_SECRET is not set$"):
+        asyncio.run(d.delete("off"))
+    assert seen == ["admin"] * 3
+
+
+def test_deployer_client_lists_projects():
+    d = deployer(lambda request: httpx.Response(200, json={"ok": True, "projects": ["hello", "trees"]}))
+    assert asyncio.run(d.projects()) == ["hello", "trees"]
+    d = deployer(lambda request: httpx.Response(500, text="boom"))
+    with pytest.raises(DeployerError, match="^the deployer said 500$"):
+        asyncio.run(d.projects())
+
+
+# --- store --------------------------------------------------------------------
+
+
+def test_store_delete_project_leaves_other_projects_alone(tmp_path):
+    store = Store(tmp_path / "db")
+    for slug in ("trees", "birds"):
+        store.add_project(slug, slug.title(), "s")
+        job = store.add_job(slug, "new", "idea", "standard")
+        store.add_note(job.id, f"note for {slug}")
+        store.start_run(job.id, "spec", "opus/high", "log")
+    assert store.delete_project("trees") == [1]
+    assert [p.slug for p in store.projects()] == ["birds"]
+    assert [j.slug for j in store.jobs()] == ["birds"]
+    assert [r["job_id"] for r in store.runs()] == [2]
+    assert store.pending_notes(1) == [] and store.pending_notes(2) == [(2, "note for birds")]
 
 
 # --- office-deploy ------------------------------------------------------------

@@ -13,10 +13,10 @@ import logging
 import os
 from datetime import timedelta
 
-from . import intake
+from . import intake, teardown
 from .config import Settings
+from .deployer_client import Deployer, DeployerError
 from .harness import Harness
-from .deployer_client import Deployer
 from .matrix import Chat, Message
 from .prompts import Prompts
 from .scheduler import WORKER_ENV_DENY, Scheduler
@@ -35,6 +35,7 @@ HELP = """Commands (in a project's room they apply to that project; elsewhere, p
 !slug <new-slug> — move it to a new address and repo
 !pause / !resume — hold a project while you tinker; with no project in the inbox, all work
 !kill [job] — drop a job
+!delete — delete a project for good: site, data, checkout, history and room (asks you to confirm)
 
 In the inbox you can also say the settings when you dictate ("rigorous, opus, max effort").
 Anything else: in the inbox, a new idea; in a project's room, feedback or a change."""
@@ -57,7 +58,7 @@ class Bot:
         harness: Harness,
         workspace: Workspace,
         prompts: Prompts,
-        deployer: Deployer | None = None,
+        deployer: Deployer,
     ):
         self.settings = settings
         self.store = store
@@ -187,7 +188,10 @@ class Bot:
         name, *args = msg.body[1:].split()
         here = self.store.project_by_room(msg.room_id)
         reply = await self.run_command(name.lower(), args, here)
-        await self.chat.send(msg.room_id, reply, notice=True)
+        room = msg.room_id
+        if here and self.store.project_by_room(room) is None:  # deleted, room and all
+            room = self.store.get("inbox_room")
+        await self.chat.send(room, reply, notice=True)
 
     async def run_command(self, name: str, args: list[str], here: Project | None) -> str:
         match name:
@@ -235,6 +239,8 @@ class Bot:
                 if not project or len(rest) != 1:
                     return "Usage: !slug <new-slug> in the project's room, or !slug <old-slug> <new-slug>."
                 return await self.move(project, rest[0].lower())
+            case "delete":
+                return await self.delete(args, here)
             case _:
                 return f"Unknown command !{name}.\n\n{HELP}"
 
@@ -309,8 +315,7 @@ class Bot:
             await self.workspace.move_repo(old, new, project.summary)
         except WorkspaceError as e:
             return f"Couldn't move the repo: {e}"
-        if self.deployer:
-            await self.deployer.stop(old)
+        await self.deployer.stop(old)
         project = self.store.move_project(old, new)
         url, repo = self.settings.project_url(new), self.settings.repo_url(new)
         await self.chat.set_topic(project.room_id, f"{url} · {repo}")
@@ -333,6 +338,32 @@ class Bot:
             f"Moved {project.name} to {new}: {repo}, soon live at {url}. {follow} "
             f"The old repo {self.settings.repo_url(old)} is still there; delete it on GitHub when you like "
             "(my token can't)."
+        )
+
+    async def delete(self, args: list[str], here: Project | None) -> str:
+        """All of a project but its repo. Riggy confirms by typing the slug."""
+        if not args:
+            if not here:
+                return "Usage: !delete <slug>. It deletes the project for good."
+            return (
+                f"This deletes {here.name} for good: the site and its data, the code checkout, every job and "
+                f"its logs, and this room. The repo stays on GitHub for you to delete. "
+                f"To go ahead, say !delete {here.slug}"
+            )
+        project = self.store.project(args[0].lower())
+        if not project:
+            return f"No project called {args[0]}."
+        await self.scheduler.drop_project(project.slug)
+        try:
+            await teardown.delete_project(project, self.settings, self.store, self.chat, self.workspace, self.deployer)
+        except (DeployerError, WorkspaceError) as e:
+            return (
+                f"Couldn't delete all of {project.name}: {e}. Its jobs are stopped; "
+                f"say !delete {project.slug} to try again."
+            )
+        return (
+            f"Deleted {project.name}: its site and data, checkout, jobs, logs and room are gone. "
+            f"Delete the repo yourself on GitHub (Settings, at the bottom): {self.settings.repo_url(project.slug)}/settings"
         )
 
 

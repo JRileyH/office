@@ -477,6 +477,95 @@ def test_slug_moves_the_project_and_queues_the_reference_fixes(office):
     run(go())
 
 
+def test_delete_asks_first_then_takes_everything_but_the_repo(office):
+    async def go():
+        room = await new_project(office, [verdict("continue")])
+        await office.step()  # a run: a log and a checkout
+        job = office.store.jobs()[0]
+        office.store.add_note(job.id, "use oak first")
+        logs = office.settings.job_logs(job.id)
+        assert logs.is_dir() and office.workspace.path("tree-cards").is_dir()
+
+        await office.say(room, "!delete")
+        assert office.chat.texts(room)[-1] == (
+            "This deletes Tree Cards for good: the site and its data, the code checkout, every job and its logs, "
+            "and this room. The repo stays on GitHub for you to delete. To go ahead, say !delete tree-cards"
+        )
+        assert office.store.project("tree-cards") is not None and office.deployer.deleted == []
+
+        await office.say(room, "!delete tree-cards")
+        assert office.deployer.deleted == ["tree-cards"]
+        assert not office.workspace.path("tree-cards").exists() and not logs.exists()
+        assert office.store.project("tree-cards") is None
+        assert office.store.jobs() == [] and office.store.runs() == [] and office.store.pending_notes(job.id) == []
+        assert office.chat.closed == [(room, "Tree Cards was deleted.")]
+        # The room is gone, so the answer comes in the inbox.
+        assert office.chat.texts(office.inbox)[-1] == (
+            "Deleted Tree Cards: its site and data, checkout, jobs, logs and room are gone. Delete the repo yourself "
+            "on GitHub (Settings, at the bottom): https://github.com/unlaunched/tree-cards/settings"
+        )
+        assert office.store.next_job() is None
+
+    run(go())
+
+
+def test_delete_from_the_inbox_needs_the_slug(office):
+    async def go():
+        await new_project(office, [])
+        await office.say(office.inbox, "!delete")
+        assert office.chat.texts(office.inbox)[-1] == "Usage: !delete <slug>. It deletes the project for good."
+        await office.say(office.inbox, "!delete trees")
+        assert office.chat.texts(office.inbox)[-1] == "No project called trees."
+        assert office.store.project("tree-cards") is not None
+        await office.say(office.inbox, "!delete tree-cards")
+        assert office.store.project("tree-cards") is None
+        assert office.chat.texts(office.inbox)[-1].startswith("Deleted Tree Cards:")
+
+    run(go())
+
+
+def test_delete_stops_a_running_phase_first(office):
+    started = asyncio.Event()
+
+    class Hangs:
+        async def run(self, **kwargs):
+            started.set()
+            await asyncio.sleep(3600)
+
+    async def go():
+        room = await new_project(office, [])
+        office.scheduler.harness = Hangs()
+        loop = asyncio.create_task(office.scheduler.run_forever())
+        await asyncio.wait_for(started.wait(), 5)
+        task = office.scheduler.current[1]
+        await office.say(room, "!delete tree-cards")
+        assert task.done()  # stopped before anything was deleted
+        assert office.store.project("tree-cards") is None and office.store.runs() == []
+        assert office.deployer.deleted == ["tree-cards"]
+        loop.cancel()
+
+    run(go())
+
+
+def test_a_failed_delete_keeps_the_project_and_can_be_retried(office):
+    async def go():
+        room = await new_project(office, [])
+        office.deployer.fail = "deleting is off: DEPLOYER_ADMIN_SECRET is not set"
+        await office.say(room, "!delete tree-cards")
+        assert office.chat.texts(room)[-1] == (
+            "Couldn't delete all of Tree Cards: deleting is off: DEPLOYER_ADMIN_SECRET is not set. "
+            "Its jobs are stopped; say !delete tree-cards to try again."
+        )
+        assert office.store.project("tree-cards") is not None
+        assert office.store.jobs()[0].state == "killed" and office.chat.closed == []
+
+        office.deployer.fail = None
+        await office.say(room, "!delete tree-cards")
+        assert office.store.project("tree-cards") is None
+
+    run(go())
+
+
 def test_slug_refuses_bad_or_taken_slugs_and_running_jobs(office):
     async def go():
         room = await new_project(office, [])

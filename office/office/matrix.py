@@ -59,6 +59,7 @@ class Chat(Protocol):
     async def set_name(self, room_id: str, name: str) -> None: ...
     async def set_topic(self, room_id: str, topic: str) -> None: ...
     async def add_alias(self, room_id: str, alias: str) -> None: ...
+    async def close_room(self, room_id: str, reason: str) -> None: ...
 
 
 class Matrix:
@@ -152,6 +153,27 @@ class Matrix:
             await self._call("PUT", f"/_matrix/client/v3/directory/room/{quote(f'#{alias}:{server}')}", json={"room_id": room_id})
         except MatrixError as e:
             log.warning("alias %s: %s", alias, e)
+
+    async def close_room(self, room_id: str, reason: str) -> None:
+        """Take a deleted project's room out of use: free its aliases for a future project,
+        remove the owner (the bot created the room, so it outranks the owner) and leave. Best effort."""
+        room = f"/_matrix/client/v3/rooms/{quote(room_id)}"
+        try:
+            aliases = (await self._call("GET", f"{room}/aliases")).get("aliases", [])
+        except (MatrixError, httpx.HTTPError) as e:
+            log.warning("aliases of %s: %s", room_id, e)
+            aliases = []
+        steps = [("DELETE", f"/_matrix/client/v3/directory/room/{quote(alias)}", None) for alias in aliases]
+        steps += [
+            ("POST", f"{room}/kick", {"user_id": self.owner, "reason": reason}),
+            ("POST", f"{room}/leave", {"reason": reason}),
+            ("POST", f"{room}/forget", {}),
+        ]
+        for method, path, body in steps:
+            try:
+                await self._call(method, path, json=body)
+            except (MatrixError, httpx.HTTPError) as e:
+                log.warning("closing %s: %s", room_id, e)
 
     async def join(self, room_id: str) -> None:
         await self._call("POST", f"/_matrix/client/v3/join/{quote(room_id)}", json={})
