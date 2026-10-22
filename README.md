@@ -10,10 +10,14 @@ See `BRIEF.md` for the design and `AGENTS.md` for how to work on the repo.
 Needs Docker (OrbStack) and [just](https://github.com/casey/just).
 
 ```sh
-cp .env.example .env    # set BASE_DOMAIN=localhost, COMPOSE_PROFILES=standalone,
-                        # DEPLOYER_GIT_SOURCE=local, DEPLOYER_REQUIRE_CHECKS=false
+just bootstrap local     # writes local settings into .env; add CLAUDE_CODE_OAUTH_TOKEN by hand
 just up
+just hello-local         # deploys examples/hello -> http://hello.localhost:8800
+just claude-check        # Claude Code headless in the office image
 ```
+
+Status page: http://office.localhost:8800. Matrix: http://matrix.localhost:8800
+(accounts: `tuwunel/README.md`).
 
 ## VPS
 
