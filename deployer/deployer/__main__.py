@@ -20,8 +20,14 @@ def main() -> None:
     # status page's route lives beside the project routes.
     write_atomic(settings.routes_dir / "office.yml", dump(office_route(settings.base_domain)))
     audit = Audit(settings.data_dir / "audit.jsonl")
-    audit.write("start", "ok", git_source=settings.git_source, require_checks=settings.require_checks)
-    app = create_app(Deployer(settings, source, docker), audit, settings.secret)
+    audit.write(
+        "start",
+        "ok",
+        git_source=settings.git_source,
+        require_checks=settings.require_checks,
+        delete=bool(settings.admin_secret),
+    )
+    app = create_app(Deployer(settings, source, docker), audit, settings.secret, settings.admin_secret)
     uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
 
 

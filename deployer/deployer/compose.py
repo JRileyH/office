@@ -114,9 +114,10 @@ class Docker:
             self._check("pull", self._compose(slug, "pull"))
         self._check("up", self._compose(slug, "up", "--detach", "--remove-orphans"))
 
-    def down(self, slug: str) -> None:
-        # No --volumes: project data is only ever deleted by hand.
-        self._check("down", self._compose(slug, "down", "--remove-orphans"))
+    def down(self, slug: str, volumes: bool = False) -> None:
+        # Data goes only with volumes=True, from /delete. Every volume a project can declare
+        # has no options (validate.py), so they are all office-<slug>_* and nobody else's.
+        self._check("down", self._compose(slug, "down", "--remove-orphans", *(["--volumes"] if volumes else [])))
 
     def ps(self, slug: str) -> list[dict]:
         result = self._compose(slug, "ps", "--all", "--format", "json")

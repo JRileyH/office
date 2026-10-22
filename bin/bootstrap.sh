@@ -52,6 +52,10 @@ if [[ -z $(get DEPLOYER_SECRET) ]]; then
   put DEPLOYER_SECRET "$(openssl rand -hex 32)"
   echo "generated DEPLOYER_SECRET"
 fi
+if [[ -z $(get DEPLOYER_ADMIN_SECRET) ]]; then
+  put DEPLOYER_ADMIN_SECRET "$(openssl rand -hex 32)"
+  echo "generated DEPLOYER_ADMIN_SECRET"
+fi
 if [[ -z $(get OFFICE_MATRIX_PASSWORD) ]]; then
   put OFFICE_MATRIX_PASSWORD "$(openssl rand -hex 24)"
   echo "generated OFFICE_MATRIX_PASSWORD"

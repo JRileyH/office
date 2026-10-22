@@ -129,6 +129,22 @@ def test_standard_playbook_walks_to_the_mvp_checkin_and_on_to_done(office):
     run(go())
 
 
+def test_workers_never_get_office_secrets(office, monkeypatch):
+    monkeypatch.setenv("OFFICE_MATRIX_PASSWORD", "pw")
+    monkeypatch.setenv("DEPLOYER_ADMIN_SECRET", "admin")
+    monkeypatch.setenv("DEPLOYER_SECRET", "deploy")
+
+    async def go():
+        await new_project(office, [verdict("continue")])
+        await office.step()
+        triage, phase = office.harness.calls
+        for call in (triage, phase):
+            assert "OFFICE_MATRIX_PASSWORD" not in call.env and "DEPLOYER_ADMIN_SECRET" not in call.env
+        assert phase.env["DEPLOYER_SECRET"] == "deploy"  # they deploy their own project
+
+    run(go())
+
+
 def test_phase_prompts_are_fully_filled_in(office):
     async def go():
         await new_project(office, [verdict("continue")])

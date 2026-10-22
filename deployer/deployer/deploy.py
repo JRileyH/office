@@ -1,8 +1,9 @@
-"""The deploy, stop, status and logs operations behind the API."""
+"""The deploy, stop, delete, status and logs operations behind the API."""
 
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -81,6 +82,23 @@ class Deployer:
             raise DeployFailed(str(e), e.output) from None
         self.route_path(slug).unlink(missing_ok=True)
         return {"stopped": slug}
+
+    def delete(self, slug: str) -> dict:
+        """Stop the project and delete its volumes, route and deploy files: all trace of it but the repo."""
+        if not self.docker.dir(check_slug(slug)).is_dir():
+            raise Rejected([f"`{slug}` has not been deployed"])
+        try:
+            self.docker.down(slug, volumes=True)
+        except compose.ComposeError as e:
+            raise DeployFailed(str(e), e.output) from None
+        self.route_path(slug).unlink(missing_ok=True)
+        shutil.rmtree(self.docker.dir(slug))
+        return {"deleted": slug}
+
+    def projects(self) -> dict:
+        """Every project with deploy files, running or stopped."""
+        root = self.docker.projects_dir
+        return {"projects": sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []}
 
     def status(self, slug: str) -> dict:
         check_slug(slug)

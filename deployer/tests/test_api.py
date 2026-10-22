@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -16,8 +17,10 @@ from deployer.validate import Policy, Project, Rejected
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SECRET = "s" * 40
+ADMIN_SECRET = "a" * 40
 SHA = "0123456789abcdef0123456789abcdef01234567"
 AUTH = {"X-Deployer-Secret": SECRET}
+ADMIN = {"X-Deployer-Admin-Secret": ADMIN_SECRET}
 
 
 class FakeSource:
@@ -41,8 +44,8 @@ class FakeDocker(compose.Docker):
         self.calls.append(("up", slug, override))
         self.dir(slug).mkdir(parents=True, exist_ok=True)
 
-    def down(self, slug):
-        self.calls.append(("down", slug))
+    def down(self, slug, volumes=False):
+        self.calls.append(("down", slug, volumes))
 
     def ps(self, slug):
         return [{"service": "web", "state": "running", "status": "Up 1 second"}]
@@ -52,7 +55,7 @@ class FakeDocker(compose.Docker):
 
 
 class Harness:
-    def __init__(self, tmp: Path, source: FakeSource, verify=lambda slug: None, require_checks=True):
+    def __init__(self, tmp: Path, source: FakeSource, verify=lambda slug: None, require_checks=True, admin_secret=ADMIN_SECRET):
         self.settings = Settings(
             secret=SECRET,
             base_domain="unlaunched.dev",
@@ -71,11 +74,14 @@ class Harness:
         )
         self.docker = FakeDocker(tmp / "projects")
         self.audit_path = tmp / "audit.jsonl"
-        app = create_app(Deployer(self.settings, source, self.docker, verify), Audit(self.audit_path), SECRET)
-        self.client = TestClient(app)
+        deployer = Deployer(self.settings, source, self.docker, verify)
+        self.client = TestClient(create_app(deployer, Audit(self.audit_path), SECRET, admin_secret))
 
     def deploy(self, slug="hello", sha=SHA, headers=AUTH):
         return self.client.post("/deploy", json={"slug": slug, "sha": sha}, headers=headers)
+
+    def delete(self, slug="hello", headers=ADMIN):
+        return self.client.post("/delete", json={"slug": slug}, headers=headers)
 
     def audit(self) -> list[dict]:
         return [json.loads(line) for line in self.audit_path.read_text().splitlines()]
@@ -186,7 +192,7 @@ def test_stop_keeps_volumes_and_removes_route(tmp_path, valid):
     h.deploy()
     r = h.client.post("/stop", json={"slug": "hello"}, headers=AUTH)
     assert r.json() == {"ok": True, "stopped": "hello"}
-    assert h.docker.calls[-1] == ("down", "hello")
+    assert h.docker.calls[-1] == ("down", "hello", False)
     assert not (tmp_path / "routes" / "hello.yml").exists()
 
 
@@ -195,6 +201,94 @@ def test_stop_needs_a_deployed_project(tmp_path, valid):
     r = h.client.post("/stop", json={"slug": "hello"}, headers=AUTH)
     assert r.status_code == 422
     assert r.json()["reasons"] == ["`hello` has not been deployed"]
+
+
+def test_delete_takes_the_volumes_route_and_deploy_files(tmp_path, valid):
+    h = Harness(tmp_path, FakeSource(valid))
+    h.deploy()
+    r = h.delete()
+    assert r.json() == {"ok": True, "deleted": "hello"}
+    assert h.docker.calls[-1] == ("down", "hello", True)
+    assert not (tmp_path / "routes" / "hello.yml").exists()
+    assert not (tmp_path / "projects" / "hello").exists()
+    assert h.audit()[-1] == {**h.audit()[-1], "action": "delete", "outcome": "ok", "slug": "hello"}
+    assert h.client.get("/status", params={"slug": "hello"}, headers=AUTH).json()["deployed"] is None
+
+
+def test_delete_needs_the_admin_secret(tmp_path, valid):
+    h = Harness(tmp_path, FakeSource(valid))
+    h.deploy()
+    for headers in ({}, AUTH, {"X-Deployer-Admin-Secret": SECRET}):
+        r = h.delete(headers=headers)
+        assert r.status_code == 401
+        assert r.json()["reasons"] == ["missing or wrong X-Deployer-Admin-Secret"]
+    assert [c[0] for c in h.docker.calls] == ["up"]
+    assert [e["outcome"] for e in h.audit() if e["action"] == "delete"] == ["unauthorized"] * 3
+
+
+def test_delete_is_off_without_an_admin_secret(tmp_path, valid):
+    h = Harness(tmp_path, FakeSource(valid), admin_secret="")
+    h.deploy()
+    for headers in ({}, {"X-Deployer-Admin-Secret": ""}, AUTH):
+        r = h.delete(headers=headers)
+        assert r.status_code == 403
+        assert r.json()["reasons"] == ["deleting is off: DEPLOYER_ADMIN_SECRET is not set"]
+    assert [c[0] for c in h.docker.calls] == ["up"]
+
+
+def test_delete_needs_a_deployed_project(tmp_path, valid):
+    h = Harness(tmp_path, FakeSource(valid))
+    assert h.delete().json()["reasons"] == ["`hello` has not been deployed"]
+    assert h.delete("office").json()["reasons"] == ["slug `office` is reserved"]
+    assert h.delete("../routes").json()["reasons"] == ["slug must match ^[a-z0-9][a-z0-9-]{1,30}$ and not end in `-`"]
+    assert h.docker.calls == []
+
+
+def test_delete_works_on_a_stopped_project(tmp_path, valid):
+    h = Harness(tmp_path, FakeSource(valid))
+    h.deploy()
+    h.client.post("/stop", json={"slug": "hello"}, headers=AUTH)
+    assert h.delete().json() == {"ok": True, "deleted": "hello"}
+    assert h.docker.calls[-1] == ("down", "hello", True)
+
+
+def test_projects_lists_running_and_stopped_projects(tmp_path, valid):
+    h = Harness(tmp_path, FakeSource(valid))
+    assert h.client.get("/projects", headers=AUTH).json() == {"ok": True, "projects": []}
+    h.deploy("trees")
+    h.deploy("hello")
+    h.client.post("/stop", json={"slug": "trees"}, headers=AUTH)
+    assert h.client.get("/projects", headers=AUTH).json() == {"ok": True, "projects": ["hello", "trees"]}
+    assert h.client.get("/projects").status_code == 401
+
+
+@pytest.mark.parametrize("admin", ["short", SECRET])
+def test_admin_secret_must_be_long_and_its_own(admin):
+    with pytest.raises(SystemExit, match="DEPLOYER_ADMIN_SECRET must be"):
+        Settings.from_env({"DEPLOYER_SECRET": SECRET, "DEPLOYER_GIT_SOURCE": "local", "DEPLOYER_ADMIN_SECRET": admin})
+
+
+def test_admin_secret_is_optional():
+    env = {"DEPLOYER_SECRET": SECRET, "DEPLOYER_GIT_SOURCE": "local"}
+    assert Settings.from_env(env).admin_secret == ""
+    assert Settings.from_env({**env, "DEPLOYER_ADMIN_SECRET": ADMIN_SECRET}).admin_secret == ADMIN_SECRET
+
+
+def test_only_delete_passes_volumes_to_compose(tmp_path, monkeypatch):
+    commands = []
+
+    def run(args, **kwargs):
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(compose.subprocess, "run", run)
+    docker = compose.Docker(tmp_path, "always")
+    docker.down("hello")
+    docker.down("hello", volumes=True)
+    assert [c[c.index("down") :] for c in commands] == [
+        ["down", "--remove-orphans"],
+        ["down", "--remove-orphans", "--volumes"],
+    ]
 
 
 def test_status(tmp_path, valid):

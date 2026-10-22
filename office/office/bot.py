@@ -19,7 +19,7 @@ from .harness import Harness
 from .deployer_client import Deployer
 from .matrix import Chat, Message
 from .prompts import Prompts
-from .scheduler import Scheduler
+from .scheduler import WORKER_ENV_DENY, Scheduler
 from .store import ACTIVE, EFFORTS, MODELS, MODES, Job, Project, Store, later
 from .workspace import Workspace, WorkspaceError
 
@@ -144,7 +144,7 @@ class Bot:
             text,
             cwd=self.settings.state_dir / "triage",
             log_path=self.settings.state_dir / "triage" / "last.jsonl.gz",
-            env={k: v for k, v in os.environ.items() if k != "OFFICE_MATRIX_PASSWORD"},
+            env={k: v for k, v in os.environ.items() if k not in WORKER_ENV_DENY},
         )
 
     # --- project rooms --------------------------------------------------------

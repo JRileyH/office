@@ -1,4 +1,8 @@
-"""HTTP API. Internal network only; every call but /healthz needs the shared secret."""
+"""HTTP API. Internal network only; every call but /healthz needs the shared secret.
+
+/delete destroys data, so it needs a second secret that only office holds: workers
+call the API with the first one and never see the admin secret.
+"""
 
 from __future__ import annotations
 
@@ -18,16 +22,25 @@ from .source import GitHubError
 from .validate import Rejected
 
 SECRET_HEADER = "X-Deployer-Secret"
+ADMIN_SECRET_HEADER = "X-Deployer-Admin-Secret"
 
 
-def create_app(deployer: Deployer, audit: Audit, secret: str) -> Starlette:
-    # One change at a time: deploys and stops are serialized.
+def create_app(deployer: Deployer, audit: Audit, secret: str, admin_secret: str = "") -> Starlette:
+    # One change at a time: deploys, stops and deletes are serialized.
     lock = asyncio.Lock()
 
-    async def handle(request: Request, action: str, op: Callable[[], dict], fields: dict, mutates: bool) -> JSONResponse:
-        if not hmac.compare_digest(request.headers.get(SECRET_HEADER, "").encode(), secret.encode()):
+    async def handle(
+        request: Request,
+        action: str,
+        op: Callable[[], dict],
+        fields: dict,
+        mutates: bool,
+        auth: tuple[str, str] = (SECRET_HEADER, secret),
+    ) -> JSONResponse:
+        header, expected = auth
+        if not hmac.compare_digest(request.headers.get(header, "").encode(), expected.encode()):
             audit.write(action, "unauthorized", **fields)
-            return JSONResponse({"ok": False, "reasons": [f"missing or wrong {SECRET_HEADER}"]}, 401)
+            return JSONResponse({"ok": False, "reasons": [f"missing or wrong {header}"]}, 401)
         try:
             if mutates:
                 async with lock:
@@ -73,6 +86,21 @@ def create_app(deployer: Deployer, audit: Audit, secret: str) -> Starlette:
             return await handle(request, "stop", _raise(e), {}, mutates=True)
         return await handle(request, "stop", lambda: deployer.stop(data["slug"]), {"slug": _short(data["slug"])}, mutates=True)
 
+    async def delete(request: Request) -> JSONResponse:
+        if not admin_secret:  # never compare against an empty secret
+            audit.write("delete", "refused", reason="no admin secret")
+            return JSONResponse({"ok": False, "reasons": ["deleting is off: DEPLOYER_ADMIN_SECRET is not set"]}, 403)
+        auth = (ADMIN_SECRET_HEADER, admin_secret)
+        try:
+            data = await body(request, {"slug"})
+        except Rejected as e:
+            return await handle(request, "delete", _raise(e), {}, mutates=True, auth=auth)
+        fields = {"slug": _short(data["slug"])}
+        return await handle(request, "delete", lambda: deployer.delete(data["slug"]), fields, mutates=True, auth=auth)
+
+    async def projects(request: Request) -> JSONResponse:
+        return await handle(request, "projects", deployer.projects, {}, mutates=False)
+
     async def status(request: Request) -> JSONResponse:
         slug = request.query_params.get("slug")
         return await handle(request, "status", lambda: deployer.status(slug), {"slug": _short(slug)}, mutates=False)
@@ -90,6 +118,8 @@ def create_app(deployer: Deployer, audit: Audit, secret: str) -> Starlette:
         routes=[
             Route("/deploy", deploy, methods=["POST"]),
             Route("/stop", stop, methods=["POST"]),
+            Route("/delete", delete, methods=["POST"]),
+            Route("/projects", projects, methods=["GET"]),
             Route("/status", status, methods=["GET"]),
             Route("/logs", logs, methods=["GET"]),
             Route("/healthz", healthz, methods=["GET"]),

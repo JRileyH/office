@@ -26,12 +26,16 @@ class Settings:
     inner_traefik_url: str
     policy: Policy
     edge_port: str = ""  # local mode's edge isn't on 80; only used in reported URLs
+    admin_secret: str = ""  # for /delete; office holds it, workers never do. Empty turns /delete off.
 
     @classmethod
     def from_env(cls, env: dict[str, str] = os.environ) -> Settings:
         secret = env.get("DEPLOYER_SECRET", "")
         if len(secret) < 32:
             raise SystemExit("DEPLOYER_SECRET must be set (at least 32 characters)")
+        admin_secret = env.get("DEPLOYER_ADMIN_SECRET", "")
+        if admin_secret and (len(admin_secret) < 32 or admin_secret == secret):
+            raise SystemExit("DEPLOYER_ADMIN_SECRET must be at least 32 characters and differ from DEPLOYER_SECRET")
         git_source = env.get("DEPLOYER_GIT_SOURCE", "github")
         if git_source not in ("github", "local"):
             raise SystemExit("DEPLOYER_GIT_SOURCE must be github or local")
@@ -67,4 +71,5 @@ class Settings:
                 project_mem_cap_mb=int(env.get("DEPLOYER_PROJECT_MEM_CAP_MB", "1024")),
             ),
             edge_port=env.get("EDGE_PORT", ""),
+            admin_secret=admin_secret,
         )

@@ -27,8 +27,9 @@ MAX_ATTEMPTS = 3  # failed runs of one phase before asking Riggy for help
 LIMIT_RETRY = timedelta(minutes=30)
 ERROR_RETRY = timedelta(minutes=1)
 IDLE_POLL_SECONDS = 30
-# Never handed to workers: they talk to Riggy through verdicts, not as the bot.
-WORKER_ENV_DENY = frozenset({"OFFICE_MATRIX_PASSWORD"})
+# Never handed to workers: they talk to Riggy through verdicts, not as the bot,
+# and only Riggy's !delete deletes a project's data.
+WORKER_ENV_DENY = frozenset({"OFFICE_MATRIX_PASSWORD", "DEPLOYER_ADMIN_SECRET"})
 
 
 class Scheduler:

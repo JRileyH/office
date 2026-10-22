@@ -160,10 +160,12 @@ The deployer is the only door from agents to Docker. Assume anything calling it 
 | --- | --- |
 | `POST /deploy {slug, sha}` | Fetch `deploy/compose.yml` from `unlaunched/<slug>` at that commit, check it, validate it, deploy it, write the route, verify the URL responds |
 | `POST /stop {slug}` | `compose down` keeping volumes, remove the route |
+| `POST /delete {slug}` | `compose down` with volumes, remove the route and deploy files |
+| `GET /projects` | Every project with deploy files, running or stopped |
 | `GET /status?slug=` | Running state, deployed commit, route |
 | `GET /logs?slug=&service=&tail=` | Container logs, for agents debugging failed deploys |
 
-Deleting a project's data is not in the API; Riggy does that by hand.
+Data is deleted only when Riggy asks (`!delete`, `bin/nuke.sh`): `/delete` needs a second secret that office holds and workers never get.
 
 **Deploys come from pushed commits only.** The deployer fetches the compose file from GitHub itself with a read-only org token, never from the agent workspace, so nothing uncommitted can reach production. It also requires every check run on that commit to have passed. Reckless-mode projects simply have fewer checks (at minimum, the image build), so no mode flag is needed or trusted.
 
