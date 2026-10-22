@@ -51,6 +51,23 @@ hello-local:
     docker build -q -t "ghcr.io/unlaunched/hello:$sha" examples/hello >/dev/null
     just deploy hello "$sha"
 
+# Create a Matrix account and print its generated password once. The first account becomes server admin.
+matrix-user name:
+    docker compose stop tuwunel
+    docker compose run --rm tuwunel --execute "users create_user {{name}}" --execute "server shutdown"
+    docker compose start tuwunel
+
+# Create the office bot account with OFFICE_MATRIX_PASSWORD from .env (never printed)
+matrix-office-account:
+    docker compose stop tuwunel
+    docker compose run --rm tuwunel --execute "users create_user office $OFFICE_MATRIX_PASSWORD" \
+        --execute "server shutdown" 2>&1 | grep -E '^@office|ERROR' || true
+    docker compose start tuwunel
+
+# DM a Matrix user from the office account (Phase 1 push-notification check)
+matrix-ping to *message:
+    docker compose exec -T office python -m office.matrix_ping {{to}} {{message}}
+
 # Build and start the stack
 up:
     docker compose up -d --build

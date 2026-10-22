@@ -52,6 +52,10 @@ if [[ -z $(get DEPLOYER_SECRET) ]]; then
   put DEPLOYER_SECRET "$(openssl rand -hex 32)"
   echo "generated DEPLOYER_SECRET"
 fi
+if [[ -z $(get OFFICE_MATRIX_PASSWORD) ]]; then
+  put OFFICE_MATRIX_PASSWORD "$(openssl rand -hex 24)"
+  echo "generated OFFICE_MATRIX_PASSWORD"
+fi
 default HARNESS claude
 default GITHUB_ORG unlaunched
 
@@ -64,6 +68,7 @@ case $mode in
     # Not 80: local dev stacks often hold it.
     default EDGE_PORT 8800
     mode_setting MATRIX_PUBLIC_URL "http://matrix.localhost:$(get EDGE_PORT)"
+    mode_setting OFFICE_MATRIX_USER @office:matrix.localhost
     mkdir -p var/git
     if ! docker network inspect web >/dev/null 2>&1; then
       docker network create web >/dev/null
@@ -77,6 +82,7 @@ case $mode in
     mode_setting DEPLOYER_GIT_SOURCE github
     mode_setting DEPLOYER_REQUIRE_CHECKS true
     mode_setting MATRIX_PUBLIC_URL https://matrix.unlaunched.dev
+    mode_setting OFFICE_MATRIX_USER @office:matrix.unlaunched.dev
     mkdir -p var/git
     if ! docker network inspect web >/dev/null 2>&1; then
       echo "docker network web is missing; is the edge proxy (~/web/proxy) running?" >&2

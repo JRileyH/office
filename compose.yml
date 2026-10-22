@@ -23,6 +23,9 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       DEPLOYER_URL: http://deployer:8000
       DEPLOYER_SECRET: ${DEPLOYER_SECRET:?set DEPLOYER_SECRET in .env}
+      MATRIX_URL: http://tuwunel:8008
+      OFFICE_MATRIX_USER: ${OFFICE_MATRIX_USER:-@office:matrix.${BASE_DOMAIN}}
+      OFFICE_MATRIX_PASSWORD: ${OFFICE_MATRIX_PASSWORD:-}
     volumes:
       - office-state:/var/lib/office
       - office-claude:/home/office/.claude
