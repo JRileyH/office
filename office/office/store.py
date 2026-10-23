@@ -1,4 +1,5 @@
-"""SQLite: the project registry, the job queue, Riggy's notes to jobs, and run records.
+"""SQLite: the project registry, the job queue and each job's steps, Riggy's notes to jobs,
+and run records.
 
 One process owns the database and every call is short, so a single connection is enough.
 """
@@ -6,7 +7,8 @@ One process owns the database and every call is short, so a single connection is
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -35,7 +37,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     phase INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'queued',
     priority INTEGER NOT NULL DEFAULT 0,
-    resume_session TEXT,             -- set when a blocked phase should continue its session
+    resume_session TEXT,             -- set when a blocked step should continue its session
     attempts INTEGER NOT NULL DEFAULT 0,
     retry_at TEXT,
     issue INTEGER,
@@ -64,6 +66,23 @@ CREATE TABLE IF NOT EXISTS runs (
     output_tokens INTEGER,
     log_path TEXT
 );
+-- A job's steps, in order, written from its playbook when it starts. office works
+-- through them one at a time; a step that fails gets a fix and a retry inserted after it.
+CREATE TABLE IF NOT EXISTS steps (
+    id INTEGER PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs(id),
+    position INTEGER NOT NULL,
+    kind TEXT NOT NULL,              -- agent, or one of office's own (playbook.CODE_STEPS)
+    name TEXT NOT NULL,
+    max_turns INTEGER,
+    state TEXT NOT NULL DEFAULT 'pending',
+    summary TEXT,                    -- what it did, or what it's waiting for
+    problem TEXT,                    -- a fix step's: what to fix
+    error TEXT,                      -- why the last attempt failed
+    links TEXT NOT NULL DEFAULT '{}',  -- JSON {label: url}: the PR, commit, CI run, site
+    started_at TEXT,
+    ended_at TEXT
+);
 """
 
 # Columns added after the first release, added to older databases on open.
@@ -72,10 +91,13 @@ MIGRATIONS = {
         "model": "TEXT NOT NULL DEFAULT 'opus'",
         "effort": "TEXT NOT NULL DEFAULT 'high'",
     },
+    "runs": {"step_id": "INTEGER"},
 }
 
 # Jobs in these states hold or want the worker slot, or wait on Riggy; anything else is finished.
 ACTIVE = ("queued", "running", "waiting", "parked")
+# Steps in these states are still to do: the first of them is the job's current step.
+OPEN = ("pending", "running", "waiting")
 MODES = ("reckless", "standard", "rigorous")
 MODELS = ("fable", "opus", "sonnet", "haiku")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -118,6 +140,23 @@ class Job:
     issue: int | None
     created_at: str
     updated_at: str
+
+
+@dataclass
+class Step:
+    id: int  # 0 for steps a job will get but hasn't yet (see plan.planned)
+    job_id: int
+    position: int
+    kind: str
+    name: str
+    max_turns: int | None = None
+    state: str = "pending"  # pending | running | waiting | done | skipped | failed
+    summary: str | None = None
+    problem: str | None = None
+    error: str | None = None
+    links: dict[str, str] = field(default_factory=dict)
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class Store:
@@ -202,6 +241,7 @@ class Store:
             ids = [r["id"] for r in self.db.execute(jobs, (slug,))]
             self.db.execute(f"DELETE FROM notes WHERE job_id IN ({jobs})", (slug,))
             self.db.execute(f"DELETE FROM runs WHERE job_id IN ({jobs})", (slug,))
+            self.db.execute(f"DELETE FROM steps WHERE job_id IN ({jobs})", (slug,))
             self.db.execute("DELETE FROM jobs WHERE slug = ?", (slug,))
             self.db.execute("DELETE FROM projects WHERE slug = ?", (slug,))
         return ids
@@ -256,7 +296,7 @@ class Store:
         return Job(**row) if row else None
 
     def requeue_interrupted(self) -> list[Job]:
-        """After a restart, a job left `running` reruns its phase from the last checkpoint."""
+        """After a restart, a job left `running` carries on from its current step."""
         jobs = self.jobs(("running",))
         self.db.execute("UPDATE jobs SET state = 'queued' WHERE state = 'running'")
         return jobs
@@ -273,12 +313,47 @@ class Store:
     def consume_notes(self, ids: list[int]) -> None:
         self.db.executemany("UPDATE notes SET consumed = 1 WHERE id = ?", [(i,) for i in ids])
 
+    # --- steps ----------------------------------------------------------------
+
+    def add_steps(self, job_id: int, steps: list[Step], after: int | None = None) -> None:
+        """Append steps to the job, or insert them after the step at position `after`."""
+        with self.db:
+            self.db.execute("BEGIN")
+            if after is None:
+                row = self.db.execute("SELECT MAX(position) AS last FROM steps WHERE job_id = ?", (job_id,)).fetchone()
+                after = row["last"] or 0
+            else:
+                self.db.execute(
+                    "UPDATE steps SET position = position + ? WHERE job_id = ? AND position > ?", (len(steps), job_id, after)
+                )
+            for i, s in enumerate(steps, start=after + 1):
+                self.db.execute(
+                    "INSERT INTO steps (job_id, position, kind, name, max_turns, state, summary, problem, links)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (job_id, i, s.kind, s.name, s.max_turns, s.state, s.summary, s.problem, json.dumps(s.links)),
+                )
+
+    def steps(self, job_id: int) -> list[Step]:
+        rows = self.db.execute("SELECT * FROM steps WHERE job_id = ? ORDER BY position", (job_id,))
+        return [_step(r) for r in rows]
+
+    def step(self, step_id: int) -> Step | None:
+        row = self.db.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
+        return _step(row) if row else None
+
+    def update_step(self, step_id: int, **fields) -> Step:
+        if "links" in fields:
+            fields["links"] = json.dumps(fields["links"])
+        columns = ", ".join(f"{name} = ?" for name in fields)
+        self.db.execute(f"UPDATE steps SET {columns} WHERE id = ?", (*fields.values(), step_id))
+        return self.step(step_id)
+
     # --- runs -----------------------------------------------------------------
 
-    def start_run(self, job_id: int, phase: str, model: str, log_path: str) -> int:
+    def start_run(self, job_id: int, phase: str, model: str, log_path: str, step_id: int | None = None) -> int:
         cur = self.db.execute(
-            "INSERT INTO runs (job_id, phase, model, started_at, log_path) VALUES (?, ?, ?, ?, ?)",
-            (job_id, phase, model, now(), log_path),
+            "INSERT INTO runs (job_id, phase, model, started_at, log_path, step_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (job_id, phase, model, now(), log_path, step_id),
         )
         return cur.lastrowid
 
@@ -297,6 +372,12 @@ class Store:
         else:
             rows = self.db.execute("SELECT * FROM runs WHERE job_id = ? ORDER BY id", (job_id,))
         return [dict(r) for r in rows]
+
+
+def _step(row: sqlite3.Row) -> Step:
+    data = dict(row)
+    data["links"] = json.loads(data["links"] or "{}")
+    return Step(**data)
 
 
 def _project(row: sqlite3.Row) -> Project:

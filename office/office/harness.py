@@ -1,4 +1,4 @@
-"""Worker adapters. A phase is one headless run that ends with a JSON verdict.
+"""Worker adapters. An agent step is one headless run that ends with a JSON verdict.
 
 `ClaudeHarness` runs the Claude Code CLI; `FakeHarness` returns scripted verdicts,
 for tests and for exercising the bot without spending usage.
@@ -18,15 +18,27 @@ from typing import Protocol
 
 log = logging.getLogger(__name__)
 
-VERDICTS = ("continue", "checkin", "blocked", "done")
+# A worker can only say its step is done, or that it can't go on without Riggy. What
+# happens next is up to office: the job's steps are in its database, not in the worker's hands.
+VERDICTS = ("done", "blocked")
 VERDICT_SCHEMA = {
     "type": "object",
     "properties": {
         "verdict": {"enum": list(VERDICTS)},
         "message": {"type": "string", "description": "One or two sentences for Riggy, plain text"},
-        "link": {"type": "string", "description": "URL the message is about: live site, PR, issue or file"},
+        "link": {"type": "string", "description": "URL the message is about, if any"},
     },
     "required": ["verdict", "message"],
+    "additionalProperties": False,
+}
+# A step that ran out of turns gets a few more to commit and say whether it finished.
+WRAPUP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "finished": {"type": "boolean", "description": "Whether the step's work is complete"},
+        "message": {"type": "string", "description": "What was done; if unfinished, what's left"},
+    },
+    "required": ["finished", "message"],
     "additionalProperties": False,
 }
 # How Claude Code reports running out of subscription usage. Matched loosely on purpose:
@@ -101,7 +113,7 @@ class ClaudeHarness:
                 async for raw in proc.stdout:
                     line = raw.decode(errors="replace")
                     out.write(line)
-                    out.flush()  # so bin/watch.sh can read a phase while it runs
+                    out.flush()  # so bin/watch.sh can read a run while it goes
                     event = _parse(line)
                     if event.get("session_id"):
                         session_id = event["session_id"]
@@ -123,7 +135,7 @@ class ClaudeHarness:
 def interpret(
     result: dict | None, session_id: str | None, returncode: int | None, stderr: str = "", verdict_expected: bool = True
 ) -> RunResult:
-    """Read Claude Code's final `result` event. `verdict` holds the structured output: a phase
+    """Read Claude Code's final `result` event. `verdict` holds the structured output: a step
     verdict normally, or whatever a custom schema asked for (`verdict_expected=False`)."""
     if result is None:
         tail = stderr.strip()[-500:]
@@ -176,17 +188,18 @@ class FakeCall:
     label: str
     env: dict[str, str]
     effort: str | None = None
+    schema: dict | None = None
 
 
 class FakeHarness:
-    """Scripted results. With no script, every phase answers `continue`, so a job walks its playbook."""
+    """Scripted results. With no script, every step answers `done`, so a job walks its steps."""
 
     def __init__(self, script: list[RunResult | dict] | Callable[[FakeCall], RunResult] | None = None):
         self.script = script
         self.calls: list[FakeCall] = []
 
     async def run(self, *, cwd, prompt, model, max_turns, log_path, env, effort=None, resume=None, schema=None, label=""):
-        call = FakeCall(cwd, prompt, model, max_turns, resume, label, env, effort)
+        call = FakeCall(cwd, prompt, model, max_turns, resume, label, env, effort, schema)
         self.calls.append(call)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(log_path, "wt") as out:
@@ -200,5 +213,5 @@ class FakeHarness:
             return item
         if schema is not None:
             raise RuntimeError("FakeHarness needs a script for structured calls")
-        verdict = {"verdict": "continue", "message": f"(fake) {label} done"}
+        verdict = {"verdict": "done", "message": f"(fake) {label} done"}
         return RunResult("verdict", verdict=verdict, session_id=f"fake-{len(self.calls)}", usage={"num_turns": 1})

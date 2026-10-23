@@ -13,7 +13,7 @@ import logging
 import os
 from datetime import timedelta
 
-from . import intake, teardown
+from . import intake, plan, teardown
 from .config import Settings
 from .deployer_client import Deployer, DeployerError
 from .harness import Harness
@@ -164,7 +164,7 @@ class Bot:
             self.store.update_job(job.id, state="queued")
             await self.chat.send(msg.room_id, f"Thanks, picking it back up. {self.queue_position(job)}", notice=True)
             self.scheduler.wake()
-        elif job.state == "running":
+        elif job.state == "running" or self.store.steps(job.id):  # under way, maybe waiting on CI
             await self.chat.send(msg.room_id, "Noted. I'll work that in at the next step of the current job.", notice=True)
         else:
             await self.chat.send(msg.room_id, "Noted. I'll include that when the job starts.", notice=True)
@@ -208,14 +208,14 @@ class Bot:
                 paused = name == "pause"
                 if not args and not here:
                     self.scheduler.set_paused(paused)
-                    return "Paused all work. The current phase finishes first." if paused else "Resumed."
+                    return "Paused all work. The current step finishes first." if paused else "Resumed."
                 project = self.pick_project(args, here)
                 if not project:
                     return f"No project called {args[0]}."
                 self.store.set_paused(project.slug, paused)
                 self.scheduler.wake()
                 if paused:
-                    return f"Paused {project.name}. A phase already running finishes first; nothing new starts until !resume."
+                    return f"Paused {project.name}. A step already running finishes first; nothing new starts until !resume."
                 return f"Resumed {project.name}."
             case "kill":
                 job = self.pick_job(args, here)
@@ -260,14 +260,19 @@ class Bot:
 
     def job_line(self, job: Job) -> str:
         project = self.store.project(job.slug)
-        book = self.scheduler.playbook(job.playbook)
-        phase = book.phases[job.phase].name if job.phase < len(book.phases) else "finished"
+        steps = plan.planned(self.settings, self.store, job)
+        step = plan.current(steps)
         what = "new project" if job.kind == "new" else "change"
         held = " (project paused)" if project.paused else ""
         state = job.state
-        if state == "parked":  # a grace period before a new project starts, or a retry after a limit or error
-            state = "retrying soon" if self.store.runs(job.id) else "starting shortly"
-        return f"#{job.id} {project.name}: {what}, {state}, {phase}{held}"
+        if state == "parked":  # a grace period before a new project starts, CI running, or a retry
+            if not self.store.steps(job.id):
+                state = "starting shortly"
+            elif step and step.kind in ("checks", "deploy") and not step.error:
+                state = "waiting for CI"
+            else:
+                state = "retrying soon"
+        return f"#{job.id} {project.name}: {what}, {state}, {plan.where(steps)}{held}"
 
     def status_text(self, project: Project) -> str:
         job = self.store.active_job(project.slug)
@@ -289,14 +294,13 @@ class Bot:
         project = self.store.update_project(project.slug, **{setting: value})
         reply = f"{project.name}: {settings_line(project).lower()}."
         job = self.store.active_job(project.slug)
-        if setting == "mode" and job and job.kind == "new" and job.playbook != value:
-            if self.store.runs(job.id):
-                reply += f" The job already under way keeps the {job.playbook} playbook; later changes use {value} rules."
-            else:
-                self.store.update_job(job.id, playbook=value)
-                reply += f" The new-project job will follow the {value} playbook."
+        if setting == "mode" and job and self.store.steps(job.id):
+            reply += f" The job already under way keeps its steps; later jobs follow {value} rules."
+        elif setting == "mode" and job and job.kind == "new" and job.playbook != value:
+            self.store.update_job(job.id, playbook=value)
+            reply += f" The new-project job will follow the {value} playbook."
         elif setting != "mode" and job:
-            reply += " Takes effect from the next phase."
+            reply += " Takes effect from the next step."
         return reply
 
     async def move(self, project: Project, new: str) -> str:
@@ -310,7 +314,7 @@ class Bot:
             return f"{new} is taken (by a project or an existing repo)."
         job = self.store.active_job(old)
         if job and job.state == "running":
-            return "A phase is running. Try again when it finishes, or !pause the project first."
+            return "A step is running. Try again when it finishes, or !pause the project first."
         try:
             await self.workspace.move_repo(old, new, project.summary)
         except WorkspaceError as e:

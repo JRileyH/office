@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from office import plan
 from office.bot import Bot
 from office.config import Settings
-from office.deployer_client import DeployerError
+from office.deployer_client import DeployerError, Deployment
 from office.harness import FakeHarness
 from office.matrix import Message
 from office.prompts import Prompts
@@ -66,6 +67,14 @@ class FakeDeployer:
         self.deleted: list[str] = []
         self.deployed: list[str] = []  # what /projects lists
         self.fail: str | None = None  # set to make deletes fail with this reason
+        self.deploys: list[tuple[str, str]] = []
+        self.refuse: list[str] = []  # problems for the next deploys, in order
+
+    async def deploy(self, slug: str, sha: str) -> Deployment:
+        self.deploys.append((slug, sha))
+        if self.refuse:
+            return Deployment(False, problem=self.refuse.pop(0))
+        return Deployment(True, url=f"https://{slug}.unlaunched.dev/")
 
     async def stop(self, slug: str) -> None:
         self.stopped.append(slug)
@@ -108,8 +117,10 @@ class Office:
         self.harness = FakeHarness(script)
         self.workspace = LocalWorkspace(self.settings.workspace_dir)
         self.prompts = Prompts(self.settings)
-        self.scheduler = Scheduler(self.settings, self.store, self.chat, self.harness, self.workspace, self.prompts)
         self.deployer = FakeDeployer()
+        self.scheduler = Scheduler(
+            self.settings, self.store, self.chat, self.harness, self.workspace, self.prompts, self.deployer
+        )
         self.bot = Bot(
             self.settings, self.store, self.chat, self.scheduler, self.harness, self.workspace, self.prompts, self.deployer
         )
@@ -119,10 +130,31 @@ class Office:
         await self.bot.handle(Message(room_id, OWNER, body, f"$in{len(self.chat.sent)}"))
 
     async def step(self) -> None:
-        """One scheduler turn: the next job's current phase."""
-        job = self.store.next_job()
+        """One scheduler turn: the next job's current step."""
+        job = self.store.next_job(at="9999")  # CI waits and retries are due at once
         assert job is not None, "nothing queued"
         await self.scheduler.step(job)
+
+    async def until(self, name: str) -> None:
+        """Turn the scheduler until the job's current step is `name` (and hasn't run yet)."""
+        for _ in range(100):
+            job = self.store.next_job(at="9999")
+            current = job and plan.current(self.scheduler.ensure_steps(job))
+            if current and plan.label(current) == name and current.started_at is None:
+                return
+            await self.step()
+        raise AssertionError(f"never got to {name}")
+
+    async def finish(self) -> None:
+        """Turn the scheduler until nothing is queued."""
+        for _ in range(100):
+            if self.store.next_job(at="9999") is None:
+                return
+            await self.step()
+        raise AssertionError("still going after 100 steps")
+
+    def labels(self, job_id: int, states=("done", "skipped", "failed")) -> list[str]:
+        return [plan.label(s) for s in self.store.steps(job_id) if s.state in states]
 
     @property
     def inbox(self) -> str:

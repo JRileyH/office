@@ -5,6 +5,8 @@ Templates the office service fills in (`$name` placeholders, Python
 the office image.
 
 - `intake.md`: triage of a dictated idea into a brief.
-- `phase.md`: the wrapper around every playbook phase.
+- `step.md`: the wrapper around every agent step of a playbook.
+- `fix.md`: the instructions of a `fix` step, which office inserts when CI fails
+  or the deployer refuses a commit.
 - `resume.md`: Riggy answered a `blocked` question; the same session carries on.
-- `wrapup.md`: a phase ran out of turns; commit and report.
+- `wrapup.md`: a step ran out of turns; commit and say whether it finished.

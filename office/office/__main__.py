@@ -10,7 +10,7 @@ import uvicorn
 
 from .bot import Bot
 from .config import Settings
-from .deployer_client import DeployerClient
+from .deployer_client import DeployerClient, OfflineDeployer
 from .harness import ClaudeHarness, FakeHarness
 from .matrix import Matrix
 from .prompts import Prompts
@@ -37,10 +37,12 @@ async def main() -> None:
 
     chat = Matrix(settings.matrix_url, settings.matrix_user, settings.matrix_password, settings.owner, store)
     prompts = Prompts(settings)
-    scheduler = Scheduler(settings, store, chat, harness, workspace, prompts)
     deployer = DeployerClient(
         settings.deployer_url, os.environ.get("DEPLOYER_SECRET", ""), os.environ.get("DEPLOYER_ADMIN_SECRET", "")
     )
+    # With the fake harness there's no real code to deploy: the pretend GitHub's commits don't exist.
+    deploys = OfflineDeployer(settings.project_url("{slug}")) if settings.harness == "fake" else deployer
+    scheduler = Scheduler(settings, store, chat, harness, workspace, prompts, deploys)
     bot = Bot(settings, store, chat, scheduler, harness, workspace, prompts, deployer)
 
     server = uvicorn.Server(uvicorn.Config(create_app(settings, store, scheduler), host="0.0.0.0", port=8000, access_log=False))

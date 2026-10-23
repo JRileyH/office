@@ -1,7 +1,5 @@
-You've used up this phase's turns. Don't start anything new. In the few turns
-left:
-
-1. Commit and push what you have, on whatever branch you're on, so nothing is lost.
-2. Return the verdict. If the phase's work is complete, `continue` (or `done` in
-   the last phase). If it isn't, return `blocked` and say in one sentence what's
-   left and what's in the way, so the phase can be picked up again.
+You've used up this step's turns. Don't start anything new. In the few turns
+left, commit what you have on this branch so nothing is lost, then say whether
+the step's work is complete: `finished` true or false, and in `message`, what
+was done and, if it isn't finished, what's left. office starts the step again
+from your commits if it isn't.

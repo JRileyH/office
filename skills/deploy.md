@@ -2,34 +2,25 @@
 
 A project goes live at `https://<slug>.unlaunched.dev` through the **deployer**, a
 separate service that fetches `deploy/compose.yml` from GitHub at a commit, checks
-it against strict rules, and runs it. You can't run Docker yourself.
+it against strict rules, and runs it. You can't run Docker yourself, and you don't
+deploy: office does, as its own steps.
 
-## The sequence
+## What office does after your step
 
-1. **Push** the commit to GitHub (normally by merging a PR into `main`).
-2. **Wait for CI on that exact commit.** The build workflow pushes
-   `ghcr.io/unlaunched/<slug>:<sha>`. The deployer refuses commits whose
-   workflow runs haven't all passed.
+1. Pushes your branch, opens a PR and waits for CI on it.
+2. Merges the PR once CI passes, and waits for CI on the merge commit: the build
+   workflow pushes `ghcr.io/unlaunched/<slug>:<sha>` from `main` only.
+3. Asks the deployer to deploy that commit. The deployer refuses commits whose
+   workflow runs haven't all passed, and checks the site answers once it's up.
 
-   ```sh
-   sha=$(git rev-parse origin/main)
-   gh run list --commit "$sha" --json databaseId,status,conclusion,name
-   gh run watch <databaseId> --exit-status
-   ```
+If CI fails or the deployer refuses, office gives the problem to a `fix` step and
+goes round again. What you control is what makes this work: a `Dockerfile` that
+builds, a workflow that tests and pushes the image (skills/new-repo.md), and a
+`deploy/compose.yml` that follows the rules below.
 
-   A run can take a few seconds to appear after the push; list again if it's empty.
-3. **Deploy:**
-
-   ```sh
-   office-deploy deploy "$sha"
-   ```
-
-   It prints JSON. `"ok": true` comes with the `url`. `"reasons"` means the compose
-   file broke a rule: fix it, push, wait for CI, deploy the new commit.
-   `"error"` with `"logs"` means it started but didn't answer: read the logs.
-4. **Check the live site** with `curl -sS "$OFFICE_URL"` and whatever paths matter.
-
-Other commands: `office-deploy status`, `office-deploy logs [service] [lines]`.
+To see the live site's state: `office-deploy status` (what's deployed, at which
+commit) and `office-deploy logs [service] [lines]`. `curl -sS "$OFFICE_URL"` shows
+what visitors get.
 
 ## deploy/compose.yml rules
 
@@ -98,11 +89,12 @@ volumes:
 Data is disposable and the database is only reachable inside the project, so plain
 passwords like this are fine. Prefer SQLite in a named volume when it's enough.
 
-## When a deploy fails
+## When a deploy failed (in a fix step)
 
-- **Checks not passed / no workflow runs:** CI hasn't finished or failed on that
-  commit. `gh run view <id> --log-failed`, fix, push, deploy the new sha.
-- **Image not found:** CI didn't push it. Only pushes to `main` push images; PR
-  builds don't. Deploy a commit that's on `main`.
+- **A rule was broken:** the deployer's reasons say which; fix
+  `deploy/compose.yml` to follow the rules above.
+- **Image not found:** CI didn't push it. The workflow must push
+  `ghcr.io/${{ github.repository }}:${{ github.sha }}` on pushes to `main`.
 - **Didn't respond:** the app crashed or listens on another port or interface. It
-  must listen on `0.0.0.0` at `office.port`. Read `office-deploy logs`.
+  must listen on `0.0.0.0` at `office.port`. The logs in the problem (or
+  `office-deploy logs`) say which.

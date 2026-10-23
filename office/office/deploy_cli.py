@@ -1,10 +1,10 @@
-"""`office-deploy`: the workers' way to talk to the deployer, for their own project only.
+"""`office-deploy`: the workers' view of the deployer, for their own project only.
 
-    office-deploy deploy <sha>              deploy a pushed commit whose checks passed
-    office-deploy status
-    office-deploy logs [service] [tail]
+    office-deploy status                    what's deployed, at which commit
+    office-deploy logs [service] [tail]     the running containers' logs
 
-The project comes from OFFICE_SLUG, which office sets for each job.
+The project comes from OFFICE_SLUG, which office sets for each job. Deploying is one of
+office's own steps (after CI passes on main), so workers can't.
 """
 
 from __future__ import annotations
@@ -41,8 +41,6 @@ def main(argv: list[str]) -> int:
         print(__doc__, file=sys.stderr)
         return 2
     match argv:
-        case ["deploy", sha]:
-            return call("POST", "/deploy", {"slug": slug, "sha": sha})
         case ["status"]:
             return call("GET", "/status?" + urllib.parse.urlencode({"slug": slug}))
         case ["logs", *rest] if len(rest) <= 2:

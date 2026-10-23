@@ -17,31 +17,47 @@ from office import playbook as playbooks
 from office.deployer_client import DeployerClient, DeployerError
 from office.harness import ClaudeHarness, interpret
 from office.matrix import Matrix
-from office.store import Store
+from office.store import Step, Store
 
 # --- playbooks ----------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "name, phases",
+    "name, mode, agents",
     [
-        ("reckless", ["build"]),
-        ("standard", ["spec", "scaffold", "mvp", "buildout", "review", "ship"]),
-        ("rigorous", ["spec", "spec-review", "scaffold", "mvp", "buildout", "review", "second-pass", "ship"]),
-        ("feature", ["change", "review", "ship"]),
+        ("reckless", "reckless", ["build"]),
+        ("standard", "standard", ["spec", "scaffold", "mvp", "buildout", "review", "docs"]),
+        ("rigorous", "rigorous", ["spec", "spec-review", "scaffold", "mvp", "buildout", "review", "second-pass", "docs"]),
+        ("feature", "reckless", ["change", "docs"]),
+        ("feature", "standard", ["change", "review", "docs"]),
+        ("feature", "rigorous", ["change", "review", "second-pass", "docs"]),
     ],
 )
-def test_playbooks_load(name, phases):
+def test_playbooks_load(name, mode, agents):
     book = playbooks.load(REPO / "playbooks" / f"{name}.md")
-    assert [p.name for p in book.phases] == phases
-    assert all(p.instructions and p.max_turns > 0 for p in book.phases)
+    steps = book.for_mode(mode)
+    assert [s.name for s in steps if s.kind == "agent"] == agents
+    assert all(s.instructions and s.max_turns > 0 for s in steps if s.kind == "agent")
+    assert [s.kind for s in steps][0] == "setup" and [s.kind for s in steps][-2:] == ["deploy", "alert"]
     assert book.intro
 
 
-def test_playbook_sections_must_match_phases(tmp_path):
+@pytest.mark.parametrize(
+    "steps, sections, error",
+    [
+        ("[setup, {agent: a, turns: 5}, deploy, alert]", "## b\nstuff", "agent step a has no '## a' section"),
+        ("[setup, {agent: a, turns: 5}, deploy, alert]", "## a\nx\n\n## b\nstuff", "sections without an agent step: b"),
+        ("[setup, {agent: a, turns: 5}, deploy]", "## a\nx", "must start with setup and end with deploy, alert"),
+        ("[{agent: a, turns: 5}, deploy, alert]", "## a\nx", "must start with setup and end with deploy, alert"),
+        ("[setup, {agent: a, turns: 5}, deploy, {do: alert, modes: [rigorous]}]", "## a\nx", "must start with setup"),
+        ("[setup, {agent: a, turns: 5}, ship-it, deploy, alert]", "## a\nx", "unknown step 'ship-it'"),
+        ("[setup, {agent: a, turns: 5, modes: [yolo]}, deploy, alert]", "## a\nx", "not yolo"),
+    ],
+)
+def test_bad_playbooks_are_refused(tmp_path, steps, sections, error):
     path = tmp_path / "bad.md"
-    path.write_text("---\nphases:\n  - {name: a, max_turns: 5}\n---\nintro\n\n## b\nstuff\n")
-    with pytest.raises(ValueError, match="phase a has no '## a' section"):
+    path.write_text(f"---\nsteps: {steps}\n---\nintro\n\n{sections}\n")
+    with pytest.raises(ValueError, match=error):
         playbooks.load(path)
 
 
@@ -115,7 +131,7 @@ prompt = sys.stdin.read()
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": "sess-1"}}))
 print(json.dumps({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "working"}}]}}}}))
 print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
-                  "structured_output": {{"verdict": "continue", "message": "argv=" + " ".join(sys.argv[1:]) + " prompt=" + prompt}}}}))
+                  "structured_output": {{"verdict": "done", "message": "argv=" + " ".join(sys.argv[1:]) + " prompt=" + prompt}}}}))
 """
 
 
@@ -299,6 +315,18 @@ def test_deployer_client_lists_projects():
 # --- store --------------------------------------------------------------------
 
 
+def test_store_inserts_steps_in_order(tmp_path):
+    store = Store(tmp_path / "db")
+    store.add_project("trees", "Trees", "s")
+    job = store.add_job("trees", "new", "idea", "standard")
+    store.add_steps(job.id, [Step(0, job.id, 0, kind, kind) for kind in ("setup", "checks", "deploy")])
+    store.add_steps(job.id, [Step(0, job.id, 0, "agent", "fix", 150, problem="CI failed"), Step(0, job.id, 0, "push", "push")], after=2)
+    steps = store.steps(job.id)
+    assert [(s.position, s.name) for s in steps] == [(1, "setup"), (2, "checks"), (3, "fix"), (4, "push"), (5, "deploy")]
+    assert (steps[2].max_turns, steps[2].problem, steps[2].state, steps[2].links) == (150, "CI failed", "pending", {})
+    assert store.update_step(steps[0].id, links={"repo": "https://x"}).links == {"repo": "https://x"}
+
+
 def test_store_delete_project_leaves_other_projects_alone(tmp_path):
     store = Store(tmp_path / "db")
     for slug in ("trees", "birds"):
@@ -320,12 +348,11 @@ def test_deploy_cli_is_scoped_to_the_job_project(monkeypatch):
     calls = []
     monkeypatch.setattr(deploy_cli, "call", lambda method, path, body=None: calls.append((method, path, body)) or 0)
     monkeypatch.setenv("OFFICE_SLUG", "trees")
-    assert deploy_cli.main(["deploy", "abc"]) == 0
     assert deploy_cli.main(["status"]) == 0
     assert deploy_cli.main(["logs", "web", "50"]) == 0
     assert deploy_cli.main(["stop"]) == 2
+    assert deploy_cli.main(["deploy", "abc"]) == 2  # deploying is office's own step
     assert calls == [
-        ("POST", "/deploy", {"slug": "trees", "sha": "abc"}),
         ("GET", "/status?slug=trees", None),
         ("GET", "/logs?slug=trees&service=web&tail=50", None),
     ]
@@ -336,18 +363,33 @@ def test_deploy_cli_is_scoped_to_the_job_project(monkeypatch):
 # --- status page --------------------------------------------------------------
 
 
-def test_status_page_lists_projects_and_jobs(office):
+def test_status_page_shows_each_jobs_steps(office):
     from starlette.testclient import TestClient
 
     from office.web import create_app
 
     office.store.add_project("trees", "Trees <b>", "Flashcards")
-    office.store.add_job("trees", "new", "idea", "standard")
+    job = office.store.add_job("trees", "new", "idea", "standard")
     client = TestClient(create_app(office.settings, office.store, office.scheduler))
     assert client.get("/healthz").json() == {"ok": True, "harness": "claude"}
     page = client.get("/").text
     assert "Trees &lt;b&gt;" in page and "https://trees.unlaunched.dev/" in page
-    assert "<td>spec</td><td>queued</td>" in page
+    # Before it starts: the steps it will get.
+    assert "queued · set up (1/24) · standard" in page
+    assert "<tr class=pending><td>○</td><td>mvp</td>" in page
+
+    steps = office.scheduler.ensure_steps(job)
+    office.store.update_step(steps[0].id, state="done", summary="Repo ready.", links={"issue": "https://github.com/unlaunched/trees/issues/1", "bad": "javascript:alert(1)"})
+    office.store.update_step(steps[1].id, state="running", started_at="2026-10-23T10:00:00+00:00")
+    office.store.update_job(job.id, state="running")
+    page = client.get("/").text
+    assert "<tr class=done><td>✓</td><td>set up</td><td>Repo ready.<div class=links><a href='https://github.com/unlaunched/trees/issues/1'>issue</a></div>" in page
+    assert "javascript:" not in page
+    assert "<tr class=running><td>▶</td><td>spec</td>" in page
+    assert "running · spec (2/24)" in page
+    job_page = client.get(f"/jobs/{job.id}").text
+    assert "bin/watch.sh 1" in job_page and "<td>mvp</td>" in job_page
+    assert client.get("/jobs/99").status_code == 404
 
 
 def test_structured_output_with_a_custom_schema_is_not_a_verdict():
@@ -390,3 +432,102 @@ def test_older_databases_get_new_columns(tmp_path):
     db.close()
     project = Store(tmp_path / "old.db").project("hey")
     assert (project.model, project.effort) == ("opus", "high")
+
+
+# --- office's own git steps, on a real repo ---------------------------------------
+
+
+@pytest.fixture
+def checkout(tmp_path, monkeypatch):
+    """A GitHubWorkspace whose `trees` checkout has a local bare repo as origin."""
+    import subprocess
+
+    from office.workspace import GitHubWorkspace
+
+    for name in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{name}_NAME", "office")
+        monkeypatch.setenv(f"GIT_{name}_EMAIL", "office@example.com")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    (tmp_path / "gitconfig").write_text("[init]\n\tdefaultBranch = main\n")
+    subprocess.run(["git", "init", "--quiet", "--bare", str(tmp_path / "origin.git")], check=True)
+    subprocess.run(["git", "clone", "--quiet", str(tmp_path / "origin.git"), str(tmp_path / "ws" / "trees")], check=True)
+    return GitHubWorkspace(tmp_path / "ws", "unlaunched")
+
+
+def git(ws, *args) -> str:
+    import subprocess
+
+    return subprocess.run(["git", *args], cwd=ws.path("trees"), capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_git_steps_branch_commit_push_and_land(checkout):
+    ws = checkout
+
+    async def go():
+        await ws.ensure_main("trees", "# Trees\n")
+        assert git(ws, "log", "--oneline", "origin/main").endswith("Start the project")
+        await ws.ensure_main("trees", "# Trees\n")  # once only
+        assert await ws.push_branch("trees", "office/job-1") is None  # nothing new for main
+
+        await ws.start_branch("trees", "office/job-1")
+        assert git(ws, "branch", "--show-current") == "office/job-1"
+        (ws.path("trees") / "app.js").write_text("hi\n")
+        (ws.path("trees") / "node_modules").mkdir()
+        (ws.path("trees") / "node_modules" / "dep.js").write_text("x\n")
+        assert await ws.commit_all("trees", "Work left uncommitted")
+        assert git(ws, "show", "--name-only", "--format=", "HEAD") == "app.js"  # never node_modules
+        assert not await ws.commit_all("trees", "again")
+
+        sha = await ws.push_branch("trees", "office/job-1")
+        assert sha == git(ws, "rev-parse", "origin/office/job-1")
+        await ws.start_branch("trees", "office/job-1")  # already on it: stays
+
+        assert await ws.push_main("trees", "office/job-1") == sha  # reckless: straight to main
+        assert git(ws, "branch", "--show-current") == "main" and await ws.main_sha("trees") == sha
+        assert "office/job-1" not in git(ws, "branch")  # gone locally, ready for the next work
+
+    asyncio.run(go())
+
+
+def test_ci_is_read_like_the_deployer_reads_it(checkout, monkeypatch):
+    from office import workspace
+
+    runs = {"workflow_runs": [
+        {"id": 1, "workflow_id": 9, "name": "build", "status": "completed", "conclusion": "failure", "html_url": "u1"},
+        {"id": 2, "workflow_id": 9, "name": "build", "status": "in_progress", "conclusion": None, "html_url": "u2"},
+    ]}  # fmt: skip
+
+    async def fake_run(*args, cwd=None):
+        if args[:2] == ("gh", "api"):
+            return 0, json.dumps(runs)
+        return 0, "npm test: 2 failing"
+
+    monkeypatch.setattr(workspace, "run", fake_run)
+    ci = asyncio.run(checkout.ci("trees", "abc"))
+    assert (ci.state, ci.detail, ci.url) == ("pending", "build: in_progress", "u2")  # the rerun replaces the failure
+    runs["workflow_runs"][1].update(status="completed", conclusion="failure")
+    ci = asyncio.run(checkout.ci("trees", "abc"))
+    assert (ci.state, ci.detail) == ("failed", "build: failure\n\nnpm test: 2 failing")
+    runs["workflow_runs"][1].update(conclusion="success")
+    assert asyncio.run(checkout.ci("trees", "abc")).state == "passed"
+    runs["workflow_runs"].clear()
+    assert asyncio.run(checkout.ci("trees", "abc")).state == "none"
+
+
+def test_deployer_client_deploys_and_says_what_to_fix():
+    def handler(request):
+        sha = json.loads(request.content)["sha"]
+        if sha == "good":
+            return httpx.Response(200, json={"ok": True, "url": "https://trees.unlaunched.dev", "sha": sha})
+        if sha == "rules":
+            return httpx.Response(422, json={"ok": False, "reasons": ["ports: not allowed", "mem_limit missing"]})
+        if sha == "crash":
+            return httpx.Response(502, json={"ok": False, "error": "didn't answer", "logs": "Error: EADDRINUSE"})
+        return httpx.Response(502, json={"ok": False, "error": "GitHub returned 401"})
+
+    d = deployer(handler)
+    assert asyncio.run(d.deploy("trees", "good")).ok
+    assert asyncio.run(d.deploy("trees", "rules")).problem == "ports: not allowed\nmem_limit missing"
+    assert asyncio.run(d.deploy("trees", "crash")).problem == "didn't answer\n\nLogs:\nError: EADDRINUSE"
+    with pytest.raises(DeployerError, match="GitHub returned 401"):  # office's setup, not the project's code
+        asyncio.run(d.deploy("trees", "config"))

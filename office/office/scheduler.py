@@ -1,7 +1,15 @@
-"""The scheduler: one worker slot, one phase at a time.
+"""The scheduler: one worker slot, one step at a time.
 
-Each phase is one headless run that ends in a verdict. The job's position in its
-playbook is saved after every phase, so a crash or a usage limit costs at most one phase.
+A job is a list of steps, written into the database from its playbook when the job
+starts. office works through them in order and nothing else decides what comes next.
+Agent steps are headless Claude Code runs that do one piece of work and commit it.
+Every other step is office's own code: setting up the repo, pushing, pull requests,
+waiting for CI, merging, deploying, the MVP check-in and telling Riggy it's done. Each
+playbook ends with deploy and alert, so a finished job is a deployed one.
+
+When CI fails or the deployer refuses a commit, a `fix` agent step is inserted after the
+failed one, followed by the steps from the last push again. Each step's outcome is
+saved, so a crash or a usage limit costs at most the step that was running.
 """
 
 from __future__ import annotations
@@ -9,33 +17,60 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import playbook as playbooks
+from . import plan
 from .config import Settings
-from .harness import Harness, RunResult
+from .deployer_client import Deployer, DeployerError
+from .harness import VERDICTS, WRAPUP_SCHEMA, Harness, RunResult
 from .matrix import Chat
 from .prompts import Prompts
-from .store import ACTIVE, Job, Project, Store, later
+from .store import ACTIVE, Job, Project, Step, Store, later, now
 from .watch import Steps, Tail, span
 from .workspace import Workspace, WorkspaceError
 
 log = logging.getLogger(__name__)
 
 WRAPUP_TURNS = 15
-MAX_ATTEMPTS = 3  # failed runs of one phase before asking Riggy for help
+FIX_TURNS = 150
+MAX_ATTEMPTS = 3  # failed attempts at one step before asking Riggy for help
+MAX_FIXES = 4  # fix steps in one job before asking Riggy for a hint
 LIMIT_RETRY = timedelta(minutes=30)
 ERROR_RETRY = timedelta(minutes=1)
+CI_POLL = timedelta(seconds=20)  # how often CI is checked while a step waits for it
+CI_START_TIMEOUT = timedelta(minutes=10)  # no workflow run on a commit by then: the repo has no CI
+CI_TIMEOUT = timedelta(minutes=60)  # CI started but still not finished: something's wrong at GitHub
 IDLE_POLL_SECONDS = 30
-MONITOR_SECONDS = 15  # how often a running phase is checked on
-HEARTBEAT_SECONDS = 20 * 60  # no news from a phase this long: say what it's on
+MONITOR_SECONDS = 15  # how often a running agent step is checked on
+HEARTBEAT_SECONDS = 20 * 60  # no news from an agent step this long: say what it's on
 # Nothing logged this long and the run is stopped and retried. Claude Code logs while it
 # thinks, and its commands time out after ten minutes, so a live run is never this quiet.
 STUCK_SECONDS = 30 * 60
 # Never handed to workers: they talk to Riggy through verdicts, not as the bot,
 # and only Riggy's !delete deletes a project's data.
 WORKER_ENV_DENY = frozenset({"OFFICE_MATRIX_PASSWORD", "DEPLOYER_ADMIN_SECRET"})
+# Office's own steps whose results are posted in the project's room. The rest (setup,
+# push, CI, merge) show on the status page; failures are always posted.
+ANNOUNCED = {"pr", "deploy"}
+
+
+@dataclass
+class Outcome:
+    """How a step went.
+
+    done, skipped: on to the next step.  wait: check again shortly (CI is running).
+    fix: something the project's code has to fix; a fix step and a retry follow.
+    error: try the step again later, then ask Riggy.  limit: out of Claude usage.
+    blocked: the worker asked Riggy a question.  checkin: the step waits for his reply.
+    """
+
+    state: str
+    summary: str = ""
+    links: dict[str, str] = field(default_factory=dict)
+    problem: str = ""
+    session_id: str | None = None
 
 
 class Scheduler:
@@ -47,6 +82,7 @@ class Scheduler:
         harness: Harness,
         workspace: Workspace,
         prompts: Prompts,
+        deployer: Deployer,
     ):
         self.settings = settings
         self.store = store
@@ -54,6 +90,7 @@ class Scheduler:
         self.harness = harness
         self.workspace = workspace
         self.prompts = prompts
+        self.deployer = deployer
         self.current: tuple[int, asyncio.Task] | None = None
         self._wake = asyncio.Event()
 
@@ -84,7 +121,7 @@ class Scheduler:
         return True
 
     async def drop_project(self, slug: str) -> None:
-        """Kill the project's unfinished jobs and wait for a running phase to stop."""
+        """Kill the project's unfinished jobs and wait for a running step to stop."""
         current = self.current
         for job in self.store.jobs(ACTIVE):
             if job.slug == slug:
@@ -96,7 +133,10 @@ class Scheduler:
 
     async def run_forever(self) -> None:
         for job in self.store.requeue_interrupted():
-            log.info("job %s was interrupted; it reruns phase %s", job.id, job.phase)
+            log.info("job %s was interrupted; it carries on from its current step", job.id)
+        for job in self.store.jobs(ACTIVE):
+            if self.store.runs(job.id):  # under way from before steps were tracked
+                self.ensure_steps(job)
         while True:
             job = None if self.paused else self.store.next_job()
             if job is None:
@@ -110,7 +150,7 @@ class Scheduler:
             self.current = (job.id, task)
             try:
                 await asyncio.wait({task})
-            except asyncio.CancelledError:  # office is shutting down; the job reruns this phase on start
+            except asyncio.CancelledError:  # office is shutting down; the job carries on when it starts
                 task.cancel()
                 raise
             finally:
@@ -121,61 +161,166 @@ class Scheduler:
                 log.error("job %s crashed", job.id, exc_info=task.exception())
                 await self.retry_or_ask(job, f"office error: {task.exception()!r}")
 
+    def ensure_steps(self, job: Job) -> list[Step]:
+        """The job's steps, written from its playbook the first time."""
+        steps = self.store.steps(job.id)
+        if not steps:
+            self.store.add_steps(job.id, plan.planned(self.settings, self.store, job))
+            steps = self.store.steps(job.id)
+        return steps
+
     async def step(self, job: Job) -> None:
-        """Run the job's current phase and act on its verdict."""
+        """Do the job's current step and act on how it went."""
         project = self.store.project(job.slug)
-        book = self.playbook(job.playbook)
-        if job.phase >= len(book.phases):
+        step = plan.current(self.ensure_steps(job))
+        if step is None:
             self.store.update_job(job.id, state="done")
             return
         job = self.store.update_job(job.id, state="running")
-        if job.phase == 0 and not self.store.runs(job.id) and not job.resume_session:
-            try:
-                job = await self.start_job(job, project)
-            except WorkspaceError as e:
-                await self.retry_or_ask(job, str(e))
-                return
+        if step.started_at is None:
+            step = self.store.update_step(step.id, state="running", started_at=now())
+        try:
+            outcome = await getattr(self, "do_" + step.kind.replace("-", "_"))(job, project, step)
+        except (WorkspaceError, DeployerError) as e:
+            outcome = Outcome("error", problem=str(e))
+        if self.store.job(job.id).state == "killed":
+            return
+        await self.settle(self.store.job(job.id), project, self.store.step(step.id), outcome)
 
-        phase = book.phases[job.phase]
+    async def settle(self, job: Job, project: Project, step: Step, outcome: Outcome) -> None:
+        name = plan.label(step)
+        match outcome.state:
+            case "done" | "skipped":
+                self.store.update_step(
+                    step.id, state=outcome.state, summary=outcome.summary, links=outcome.links, error=None, ended_at=now()
+                )
+                steps = self.store.steps(job.id)
+                finished = plan.current(steps) is None
+                self.store.update_job(job.id, state="done" if finished else "queued", attempts=0, resume_session=None)
+                if outcome.state == "done" and (step.kind == "agent" or step.kind in ANNOUNCED):
+                    link = next(iter(outcome.links.values()), "")
+                    nxt = "" if finished else f"\nNext: {plan.upcoming(steps, step)}."
+                    await self.say(project, _join(f"✓ {name}: {outcome.summary}", link) + nxt, notice=True)
+            case "wait":
+                self.store.update_step(step.id, summary=outcome.summary, links=outcome.links)
+                self.store.update_job(job.id, state="parked", retry_at=later(CI_POLL), attempts=0)
+            case "fix":
+                self.store.update_step(
+                    step.id, state="failed", summary=outcome.summary, error=outcome.problem, links=outcome.links, ended_at=now()
+                )
+                steps = self.store.steps(job.id)
+                fixes = sum(1 for s in steps if s.kind == "agent" and s.name == "fix")
+                fix = Step(0, job.id, 0, "agent", "fix", FIX_TURNS, problem=outcome.problem)
+                self.store.add_steps(job.id, [fix, *_retry(steps, step)], after=step.position)
+                if fixes < MAX_FIXES:
+                    self.store.update_job(job.id, state="queued", attempts=0)
+                    await self.say(project, f"✗ {name}: {outcome.summary}. Fixing it.", notice=True)
+                else:  # going round in circles: one of the few reasons to interrupt Riggy
+                    self.store.update_job(job.id, state="waiting", attempts=0)
+                    await self.say(
+                        project,
+                        f"I've tried to fix {name} {fixes} times and it still fails: {outcome.summary}.\n\n"
+                        "Reply with a hint and I'll try again, or `!kill` to drop the job.",
+                    )
+            case "checkin":
+                self.store.update_step(step.id, state="waiting", summary="Waiting for your reply.")
+                self.store.update_job(job.id, state="waiting", attempts=0)
+            case "blocked":
+                self.store.update_step(step.id, summary=f"Asked you: {outcome.summary}")
+                self.store.update_job(job.id, state="waiting", attempts=0, resume_session=outcome.session_id)
+                await self.say(project, _join(f"Question: {outcome.summary}", outcome.links.get("link", "")) + "\n\nReply here and I'll carry on.")
+            case "limit":
+                self.store.update_job(job.id, state="parked", retry_at=later(LIMIT_RETRY))
+                if self.store.get("limit_notice") != "1":
+                    self.store.put("limit_notice", "1")
+                    await self.status(f"Hit the Claude usage limit during {project.name}; parked it and retrying every 30 minutes.")
+                return
+            case "error":
+                self.store.update_step(step.id, state="pending", error=outcome.problem, started_at=None)
+                await self.retry_or_ask(job, outcome.problem)
+        self.store.put("limit_notice", "0")
+
+    async def retry_or_ask(self, job: Job, error: str) -> None:
+        job = self.store.job(job.id)
+        if job.state == "killed":
+            return
+        attempts = job.attempts + 1
+        project = self.store.project(job.slug)
+        if attempts < MAX_ATTEMPTS:
+            self.store.update_job(job.id, state="parked", attempts=attempts, retry_at=later(ERROR_RETRY), resume_session=None)
+            log.warning("job %s attempt %s failed: %s", job.id, attempts, error)
+            return
+        # Stuck after retries is one of the few reasons to interrupt Riggy.
+        self.store.update_job(job.id, state="waiting", attempts=0, resume_session=None)
+        step = plan.current(self.store.steps(job.id))
+        name = plan.label(step) if step else "the job"
+        await self.say(
+            project,
+            f"I'm stuck on {name} after {MAX_ATTEMPTS} tries: {error[:400]}\n\n"
+            "Reply with a hint and I'll try again, or `!kill` to drop the job.",
+        )
+
+    # --- agent steps ----------------------------------------------------------
+
+    async def do_agent(self, job: Job, project: Project, step: Step) -> Outcome:
+        """One headless run that does the step's work on the job's branch and commits it."""
+        branch = self.branch(job)
+        await self.workspace.start_branch(project.slug, branch)
         notes = self.store.pending_notes(job.id)
         feedback = [text for _, text in notes]
         if job.resume_session:
             prompt, resume = self.prompts.resume(feedback), job.resume_session
         else:
+            book = plan.load(self.settings, job.playbook)
             lessons = self.lessons_path.read_text() if self.lessons_path.exists() else ""
-            prompt, resume = self.prompts.phase(project, job, book, feedback, lessons), None
+            steps = self.store.steps(job.id)
+            prompt, resume = self.prompts.step(project, job, book, step, steps, branch, feedback, lessons), None
 
-        result = await self.execute(job, project, phase.name, phase.max_turns, prompt, resume)
+        result = await self.execute(job, project, step, step.name, step.max_turns or FIX_TURNS, prompt, resume)
         if result.outcome == "max_turns" and result.session_id:
-            result = await self.execute(
-                job, project, f"{phase.name}-wrapup", WRAPUP_TURNS, self.prompts.wrapup(), result.session_id
+            wrapup = await self.execute(
+                job, project, step, f"{step.name}-wrapup", WRAPUP_TURNS, self.prompts.wrapup(), result.session_id, WRAPUP_SCHEMA
             )
-        if self.store.job(job.id).state == "killed":
-            return
-        await self.handle(job, project, book, result, [i for i, _ in notes])
+            said = str((wrapup.verdict or {}).get("message", "")).strip()
+            if wrapup.outcome != "verdict":
+                result = wrapup
+            elif wrapup.verdict.get("finished") is True:
+                result = RunResult("verdict", {"verdict": "done", "message": said}, session_id=wrapup.session_id)
+            else:
+                result = RunResult("error", error=f"ran out of turns: {said}")
+        if result.outcome == "limit":
+            return Outcome("limit")
+        if result.outcome != "verdict":
+            return Outcome("error", problem=result.error or result.outcome)
 
-    async def start_job(self, job: Job, project: Project) -> Job:
-        """First phase of a job: repo and checkout ready, an issue to hang the work on."""
-        await self.workspace.ensure_repo(project.slug, project.summary)
-        await self.workspace.sync_main(project.slug)
-        if job.issue is None:
-            title = project.name if job.kind == "new" else _first_line(job.request)
-            body = f"Requested in Matrix:\n\n> {job.request}\n\nWorked on by office (job {job.id})."
-            issue = await self.workspace.open_issue(project.slug, title, body)
-            job = self.store.update_job(job.id, issue=issue)
-        if job.kind == "change":
-            await self.say(project, f"Working on it: {_first_line(job.request)}", notice=True)
-        return job
+        v = result.verdict
+        if v.get("verdict") not in VERDICTS:
+            return Outcome("error", problem=f"unknown verdict {v.get('verdict')!r}")
+        self.store.consume_notes([i for i, _ in notes])
+        message, link = str(v.get("message", "")).strip(), str(v.get("link") or "").strip()
+        links = {"link": link} if link.startswith(("https://", "http://")) else {}
+        if v["verdict"] == "blocked":
+            return Outcome("blocked", message, links, session_id=result.session_id)
+        await self.workspace.commit_all(project.slug, f"{step.name}: work left uncommitted")
+        return Outcome("done", message, links)
 
     async def execute(
-        self, job: Job, project: Project, label: str, max_turns: int, prompt: str, resume: str | None
+        self,
+        job: Job,
+        project: Project,
+        step: Step,
+        label: str,
+        max_turns: int,
+        prompt: str,
+        resume: str | None,
+        schema: dict | None = None,
     ) -> RunResult:
-        """One run of the phase, with the project's current model and effort."""
+        """One run of the step, with the project's current model and effort."""
         project = self.store.project(project.slug)
         log_path = self.settings.job_logs(job.id) / f"{len(self.store.runs(job.id)) + 1:03d}-{label}.jsonl.gz"
-        run_id = self.store.start_run(job.id, label, f"{project.model}/{project.effort}", str(log_path))
+        run_id = self.store.start_run(job.id, label, f"{project.model}/{project.effort}", str(log_path), step.id)
         notes = self.progress_path(job)
-        seen = notes.stat().st_size if notes.exists() else 0  # notes from earlier phases were passed on then
+        seen = notes.stat().st_size if notes.exists() else 0  # notes from earlier steps were passed on then
         run = asyncio.create_task(
             self.harness.run(
                 cwd=self.workspace.path(project.slug),
@@ -186,10 +331,11 @@ class Scheduler:
                 log_path=log_path,
                 env=self.worker_env(project, job),
                 resume=resume,
+                schema=schema,
                 label=label,
             )
         )
-        monitor = asyncio.create_task(self.monitor(job, project, label, log_path, seen, run))
+        monitor = asyncio.create_task(self.monitor(job, project, step, label, log_path, seen, run))
         try:
             await asyncio.wait({run})
         except asyncio.CancelledError:
@@ -207,96 +353,168 @@ class Scheduler:
         return result
 
     async def monitor(
-        self, job: Job, project: Project, label: str, log_path: Path, seen: int, run: asyncio.Task
+        self, job: Job, project: Project, step: Step, label: str, log_path: Path, seen: int, run: asyncio.Task
     ) -> None:
-        """While a phase runs, keep Riggy posted: the worker's progress notes (past byte `seen`) as it
-        writes them, what it's on when there's been no news for a while, and a restart if it stops."""
+        """While an agent step runs, keep Riggy posted: the worker's progress notes (past byte `seen`)
+        as it writes them, what it's on when there's been no news for a while, and a restart if it stops."""
         notes = self.progress_path(job)
         tail, started = Tail(log_path), datetime.now(UTC)
         steps, news = Steps(started), started
-        phases = len(self.playbook(job.playbook).phases)
+        total = len(self.store.steps(job.id))
         while True:
             await asyncio.sleep(MONITOR_SECONDS)
             steps.lines(tail.events())
-            now = datetime.now(UTC)
+            now_ = datetime.now(UTC)
             new, seen = _new_lines(notes, seen)
             for note in new[-3:]:
                 await self.say(project, f"▸ {_first_line(note, 300)}", notice=True)
-                news = now
-            quiet = now - (tail.modified() or started)
+                news = now_
+            quiet = now_ - (tail.modified() or started)
             if quiet.total_seconds() >= STUCK_SECONDS:
                 await self.say(project, f"No sign of life in {label} for {span(quiet)}, so I'm restarting it.", notice=True)
                 run.cancel()
                 return
-            if (now - news).total_seconds() >= HEARTBEAT_SECONDS:
+            if (now_ - news).total_seconds() >= HEARTBEAT_SECONDS:
                 said = f' Last said: "{steps.said}"' if steps.said else ""
-                where = f"{label} ({job.phase + 1}/{phases})"
-                await self.say(project, f"Still on {where}, {span(now - started)} in.{said} Now {steps.doing(now)}.", notice=True)
-                news = now
+                where = f"{label} (step {step.position}/{total})"
+                await self.say(project, f"Still on {where}, {span(now_ - started)} in.{said} Now {steps.doing(now_)}.", notice=True)
+                news = now_
 
-    async def handle(self, job: Job, project: Project, book: playbooks.Playbook, result: RunResult, note_ids: list[int]) -> None:
-        if result.outcome == "limit":
-            self.store.update_job(job.id, state="parked", retry_at=later(LIMIT_RETRY))
-            if self.store.get("limit_notice") != "1":
-                self.store.put("limit_notice", "1")
-                await self.status(f"Hit the Claude usage limit during {project.name}; parked it and retrying every 30 minutes.")
-            return
-        self.store.put("limit_notice", "0")
-        if result.outcome != "verdict":
-            await self.retry_or_ask(job, result.error or result.outcome)
-            return
+    # --- office's own steps ---------------------------------------------------
 
-        self.store.consume_notes(note_ids)
-        v = result.verdict
-        message, link = v.get("message", "").strip(), (v.get("link") or "").strip()
-        nxt = job.phase + 1
-        match v["verdict"]:
-            case "continue" if nxt < len(book.phases):
-                self.store.update_job(job.id, phase=nxt, state="queued", attempts=0, resume_session=None)
-                upcoming = f"Next: {book.phases[nxt].name} ({nxt + 1}/{len(book.phases)})."
-                await self.say(project, _join(f"✓ {book.phases[job.phase].name}: {message}", link) + f"\n{upcoming}", notice=True)
-            case "continue" | "done":
-                self.store.update_job(job.id, phase=len(book.phases), state="done", attempts=0, resume_session=None)
-                await self.say(project, _join(f"Done: {message}", link or self.settings.project_url(project.slug)))
-                await self.status(f"Finished job {job.id} on {project.name}: {self.settings.project_url(project.slug)}", notice=True)
-            case "checkin":
-                self.store.update_job(job.id, phase=min(nxt, len(book.phases)), state="waiting", attempts=0, resume_session=None)
-                await self.say(project, _join(message, link) + "\n\nReply here: say it looks good, or what to change.")
-            case "blocked":
-                self.store.update_job(job.id, state="waiting", attempts=0, resume_session=result.session_id)
-                await self.say(project, _join(f"Question: {message}", link) + "\n\nReply here and I'll carry on.")
+    async def do_setup(self, job: Job, project: Project, step: Step) -> Outcome:
+        """The repo, with a first commit on main if it's new, the checkout up to date, and an issue."""
+        slug, url = project.slug, self.settings.project_url(project.slug)
+        await self.workspace.ensure_repo(slug, project.summary)
+        await self.workspace.ensure_main(slug, f"# {project.name}\n\nLive at {url}\n\n{project.summary}\n")
+        await self.workspace.sync_main(slug)
+        if job.issue is None:
+            title = project.name if job.kind == "new" else _first_line(job.request)
+            body = f"Requested in Matrix:\n\n> {job.request}\n\nWorked on by office (job {job.id})."
+            issue = await self.workspace.open_issue(slug, title, body)
+            job = self.store.update_job(job.id, issue=issue)
+        if job.kind == "change":
+            await self.say(project, f"Working on it: {_first_line(job.request)}", notice=True)
+        links = {"repo": self.settings.repo_url(slug)}
+        if job.issue:
+            links["issue"] = f"{self.settings.repo_url(slug)}/issues/{job.issue}"
+        return Outcome("done", "Repo, checkout and issue ready.", links)
 
-    async def retry_or_ask(self, job: Job, error: str) -> None:
-        job = self.store.job(job.id)
-        if job.state == "killed":
-            return
-        attempts = job.attempts + 1
-        project = self.store.project(job.slug)
-        if attempts < MAX_ATTEMPTS:
-            self.store.update_job(job.id, state="parked", attempts=attempts, retry_at=later(ERROR_RETRY), resume_session=None)
-            log.warning("job %s attempt %s failed: %s", job.id, attempts, error)
-            return
-        # Stuck after retries is one of the few reasons to interrupt Riggy.
-        self.store.update_job(job.id, state="waiting", attempts=0, resume_session=None)
-        book = self.playbook(job.playbook)
-        phase = book.phases[min(job.phase, len(book.phases) - 1)].name
+    async def do_push(self, job: Job, project: Project, step: Step) -> Outcome:
+        branch = self.branch(job)
+        await self.workspace.commit_all(project.slug, "Work left uncommitted")
+        sha = await self.workspace.push_branch(project.slug, branch)
+        if sha is None:
+            return Outcome("skipped", "Nothing new to push.")
+        return Outcome("done", f"Pushed {sha[:7]} to {branch}.", {"branch": f"{self.settings.repo_url(project.slug)}/tree/{branch}"})
+
+    async def do_push_main(self, job: Job, project: Project, step: Step) -> Outcome:
+        await self.workspace.commit_all(project.slug, "Work left uncommitted")
+        sha = await self.workspace.push_main(project.slug, self.branch(job))
+        if sha is None:
+            return Outcome("skipped", "Nothing new to push.")
+        return Outcome("done", f"Pushed {sha[:7]} to main.", {"commit": self.commit_url(project, sha)})
+
+    async def do_pr(self, job: Job, project: Project, step: Step) -> Outcome:
+        steps = self.store.steps(job.id)
+        work = _since_last(steps, step, "merge")
+        names = " + ".join(s.name for s in work) or "changes"
+        title = project.name if job.kind == "new" else _first_line(job.request, 60)
+        last = not any(s.kind == "pr" for s in steps if s.position > step.position and s.state == "pending")
+        issue = f"{'Closes' if last else 'Part of'} #{job.issue}" if job.issue else ""
+        body = "\n\n".join(
+            [p for p in (issue, "\n".join(f"- **{s.name}:** {s.summary}" for s in work if s.summary)) if p]
+            + [f"Opened by office (job {job.id}); it merges this once CI passes."]
+        )
+        pr = await self.workspace.open_pr(project.slug, self.branch(job), f"{title}: {names}", body)
+        if pr is None:
+            return Outcome("skipped", "Nothing to merge.")
+        return Outcome("done", f"PR #{pr.number} is open.", {"pr": pr.url})
+
+    async def do_checks(self, job: Job, project: Project, step: Step) -> Outcome:
+        pr = await self.workspace.pull_request(project.slug, self.branch(job))
+        if pr is None:
+            return Outcome("skipped", "No PR to check.")
+        return await self.wait_for_ci(project, step, pr.sha, f"PR #{pr.number}")
+
+    async def do_merge(self, job: Job, project: Project, step: Step) -> Outcome:
+        pr = await self.workspace.pull_request(project.slug, self.branch(job))
+        if pr is None:
+            return Outcome("skipped", "Nothing to merge.")
+        sha = await self.workspace.merge(project.slug, pr, self.branch(job))
+        return Outcome("done", f"Merged PR #{pr.number} as {sha[:7]}.", {"pr": pr.url, "commit": self.commit_url(project, sha)})
+
+    async def do_deploy(self, job: Job, project: Project, step: Step) -> Outcome:
+        """Deploy main once its CI passes; done only when the deployer has the site answering."""
+        sha = await self.workspace.main_sha(project.slug)
+        ci = await self.wait_for_ci(project, step, sha, "main")
+        if ci.state != "done":
+            return ci
+        deployment = await self.deployer.deploy(project.slug, sha)
+        if not deployment.ok:
+            problem = f"The deployer couldn't deploy {sha[:7]}:\n{deployment.problem}"
+            return Outcome("fix", f"the deployer refused {sha[:7]}", {"commit": self.commit_url(project, sha)}, problem)
+        url = self.settings.project_url(project.slug)
+        return Outcome("done", f"{sha[:7]} is live.", {"site": url, "commit": self.commit_url(project, sha)})
+
+    async def do_checkin(self, job: Job, project: Project, step: Step) -> Outcome:
+        """Show Riggy the live site and wait for his reply, which goes to the next step."""
+        if step.state == "waiting":  # he's replied (the bot queued the job again)
+            replies = self.store.pending_notes(job.id)
+            said = _first_line(replies[-1][1], 200) if replies else ""
+            return Outcome("done", f"You said: “{said}”" if said else "You replied.")
+        steps = self.store.steps(job.id)
+        message = plan.last_said(steps) or "Something to try is live."
         await self.say(
             project,
-            f"I'm stuck in {phase} after {MAX_ATTEMPTS} tries: {error[:400]}\n\n"
-            "Reply with a hint and I'll try again, or `!kill` to drop the job.",
+            f"{message}\n{self.settings.project_url(project.slug)}\n\n"
+            "Try it and reply here: say it looks good, or what to change.",
         )
+        return Outcome("checkin")
+
+    async def do_alert(self, job: Job, project: Project, step: Step) -> Outcome:
+        """The last step: only reached once the final deploy succeeded."""
+        url = self.settings.project_url(project.slug)
+        message = plan.last_said(self.store.steps(job.id)) or f"{project.name} is live."
+        await self.say(project, _join(f"Done: {message}", url))
+        await self.status(f"Finished job {job.id} on {project.name}: {url}", notice=True)
+        return Outcome("done", "Told you it's live.", {"site": url})
+
+    async def wait_for_ci(self, project: Project, step: Step, sha: str, what: str) -> Outcome:
+        ci = await self.workspace.ci(project.slug, sha)
+        waited = datetime.now(UTC) - datetime.fromisoformat(step.started_at)
+        links = {"ci": ci.url} if ci.url else {}
+        match ci.state:
+            case "passed":
+                return Outcome("done", f"CI passed on {what} ({sha[:7]}).", links)
+            case "failed":
+                problem = f"CI failed on {what} (commit {sha[:7]}):\n{ci.detail}"
+                return Outcome("fix", f"CI failed on {what}", links, problem)
+            case "none" if waited >= CI_START_TIMEOUT:
+                problem = (
+                    f"No CI workflow ran on {what} (commit {sha[:7]}) in {span(waited)}. The repo needs "
+                    ".github/workflows/build.yml, running on pull requests and pushes to main (skills/new-repo.md)."
+                )
+                return Outcome("fix", f"no CI ran on {what}", links, problem)
+            case "pending" if waited >= CI_TIMEOUT:
+                return Outcome("error", problem=f"CI on {what} still hasn't finished after {span(waited)}: {ci.detail}")
+        return Outcome("wait", f"Waiting for CI on {what}: {ci.detail or 'not started yet'}", links)
 
     # --- helpers --------------------------------------------------------------
 
-    def playbook(self, name: str) -> playbooks.Playbook:
-        return playbooks.load(self.settings.process_dir / "playbooks" / f"{name}.md")
+    def branch(self, job: Job) -> str:
+        """Where a job's work goes between merges."""
+        return f"office/job-{job.id}"
+
+    def commit_url(self, project: Project, sha: str) -> str:
+        return f"{self.settings.repo_url(project.slug)}/commit/{sha}"
 
     @property
     def lessons_path(self) -> Path:
         return self.settings.state_dir / "lessons.md"
 
     def progress_path(self, job: Job) -> Path:
-        """Where the worker appends progress notes for Riggy, one line each (prompts/phase.md)."""
+        """Where the worker appends progress notes for Riggy, one line each (prompts/step.md)."""
         return self.settings.job_logs(job.id) / "progress.txt"
 
     def worker_env(self, project: Project, job: Job) -> dict[str, str]:
@@ -319,6 +537,30 @@ class Scheduler:
         room = self.store.get("status_room")
         if room:
             await self.chat.send(room, text, notice=notice)
+
+
+def _retry(steps: list[Step], failed: Step) -> list[Step]:
+    """Office's steps from the last push up to and including the one that failed, to run again
+    after the fix: pushing it, a PR, CI, merging and deploying, as far as the failure got.
+    Steps skipped the first time (nothing to merge then) are repeated too: the fix has to land."""
+    before = [s for s in steps if s.position <= failed.position]
+    start = max((i for i, s in enumerate(before) if s.kind in ("push", "push-main")), default=None)
+    if start is None:
+        return [Step(0, failed.job_id, 0, failed.kind, failed.name)]
+    return [Step(0, failed.job_id, 0, s.kind, s.name) for s in before[start:] if s.kind != "agent"]
+
+
+def _since_last(steps: list[Step], step: Step, kind: str) -> list[Step]:
+    """The agent steps done since the last `kind` step before `step`."""
+    work = []
+    for s in steps:
+        if s.position >= step.position:
+            break
+        if s.kind == kind and s.state == "done":
+            work = []
+        elif s.kind == "agent" and s.state == "done":
+            work.append(s)
+    return work
 
 
 def _first_line(text: str, limit: int = 80) -> str:

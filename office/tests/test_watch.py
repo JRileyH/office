@@ -18,7 +18,7 @@ RESULT = {
     "subtype": "success",
     "is_error": False,
     "num_turns": 12,
-    "structured_output": {"verdict": "continue", "message": "Spec written."},
+    "structured_output": {"verdict": "done", "message": "Spec written."},
 }
 
 
@@ -82,7 +82,7 @@ def test_the_harness_log_can_be_read_while_claude_runs(tmp_path):
         "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's'}), flush=True)\n"
         f"while not os.path.exists({str(go)!r}):\n    time.sleep(0.01)\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
-        " 'structured_output': {'verdict': 'continue', 'message': 'ok'}}))\n"
+        " 'structured_output': {'verdict': 'done', 'message': 'ok'}}))\n"
     )
     binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
     log_path = tmp_path / "001-build.jsonl.gz"
@@ -122,7 +122,7 @@ def test_each_step_gets_a_line():
             answer("t2", "", 90, error=True),
             {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}},
             {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "rateLimitType": "five_hour"}},
-            call("t4", "StructuredOutput", 95, verdict="continue", message="Spec written."),
+            call("t4", "StructuredOutput", 95, verdict="done", message="Spec written."),
             answer("t4", "Structured output provided successfully", 95),
             RESULT,
         ]
@@ -137,7 +137,7 @@ def test_each_step_gets_a_line():
         "    1:22  ┆ ← # Spec",
         "    1:30  ✗ (no output)",
         "          Claude usage: allowed_warning (five_hour)",
-        "          ■ finished after 12 turns: continue: Spec written.",
+        "          ■ finished after 12 turns: done: Spec written.",
     ]
     assert steps.ended
 
@@ -150,7 +150,7 @@ def test_steps_know_what_the_worker_is_on():
     assert steps.doing(T0 + timedelta(minutes=4)) == "thinking for 2m"
 
 
-def test_watch_follows_a_phase_until_nothing_more_is_running(office):
+def test_watch_follows_a_run_until_nothing_more_is_running(office):
     store = office.store
     job, run_id, log = running_job(office)
     write(log, said("Reading the brief.", 2))
@@ -162,15 +162,15 @@ def test_watch_follows_a_phase_until_nothing_more_is_running(office):
     out = []
     follow(office.settings, store, out.append, sleep=lambda _: worker.pop(0)(), clock=lambda: T0 + timedelta(minutes=5))
     assert out == [
-        "#1 Trees (trees): new, rigorous, opus/max. spec (1/8): running for 5m",
+        "#1 Trees (trees): new, rigorous, opus/max. spec (2/26): running for 5m",
         "",
         "── job 1 run 001-spec on opus/max, started 2026-10-22 13:30 UTC",
         "    0:02  says: Reading the brief.",
         "    1:05  → Bash npm test",
         "    1:10  ← 42 passed",
-        "          ■ finished after 12 turns: continue: Spec written.",
+        "          ■ finished after 12 turns: done: Spec written.",
         "",
-        "#1 Trees (trees): new, rigorous, opus/max. spec (1/8): waiting on you: reply in its room",
+        "#1 Trees (trees): new, rigorous, opus/max. spec (2/26): waiting on you: reply in its room",
     ]
 
 
@@ -215,12 +215,12 @@ def test_watch_shows_runs_that_end_between_looks(office):
     out = []
     follow(office.settings, store, out.append, sleep=fails_fast, clock=lambda: T0)
     assert out == [
-        "#1 Trees (trees): new, standard, opus/high. spec (1/6): starting in 30s",
+        "#1 Trees (trees): new, standard, opus/high. set up (1/24): starting in 30s",
         "",
         "── job 1 run 001-spec on opus/high, started 2026-10-22 13:30 UTC: error after 3s",
         "          ■ error",
         "",
-        "#1 Trees (trees): new, standard, opus/high. spec (1/6): retrying in 20m (last run: error)",
+        "#1 Trees (trees): new, standard, opus/high. spec (2/24): retrying in 20m (last run: error)",
     ]
 
 
@@ -232,7 +232,7 @@ def test_a_run_cut_short_by_a_restart_is_not_waited_on(office):
     watch_run(office.store, office.store.run(run_id), out.append, sleep=None, clock=lambda: T0, backlog=20)
     assert out[-2:] == [
         "    0:02  says: Reading the brief.",
-        "          ■ interrupted: office restarted, and the phase runs again",
+        "          ■ interrupted: office restarted, and the step runs again",
     ]
 
 
@@ -262,9 +262,9 @@ def test_overview_says_why_jobs_wait(office):
     store.put("scheduler_paused", "1")
     assert overview(office.settings, store, T0) == [
         "Work is paused: !resume in the inbox starts it again.",
-        "#1 A (a): new, standard, opus/high. spec (1/6): waiting on you: reply in its room",
-        "#2 B (b): change, standard, opus/high. spec (1/6): retrying in 23m (last run: limit)",
-        "#3 C (c): new, standard, opus/high. spec (1/6): starting in 40s, project paused",
+        "#1 A (a): new, standard, opus/high. set up (1/24): waiting on you: reply in its room",
+        "#2 B (b): change, standard, opus/high. spec (2/24): retrying in 23m (last run: limit)",
+        "#3 C (c): new, standard, opus/high. set up (1/24): starting in 40s, project paused",
     ]
     assert not expecting(store, T0)
     store.put("scheduler_paused", "0")
@@ -289,6 +289,6 @@ def test_transcript_shows_every_run_of_a_job(office):
         "",
         "── job 1 run 001-spec on opus/max, started 2026-10-22 13:30 UTC: verdict after 14m, 12 turns",
         "    0:05  says: Writing the spec.",
-        "          ■ finished after 12 turns: continue: Spec written.",
+        "          ■ finished after 12 turns: done: Spec written.",
     ]
     assert transcript(office.settings, store, 99, out.append) == 1

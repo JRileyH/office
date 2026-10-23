@@ -1,11 +1,12 @@
-"""What office is doing: its queue, the phase that's running, and each step its worker takes.
+"""What office is doing: its queue, the agent step that's running, and each thing its worker does.
 
-    python -m office.watch        the queue, then each phase as it runs, until nothing more
-                                  is about to run (Ctrl-C stops sooner)
+    python -m office.watch        the queue, then each agent run as it goes, until nothing
+                                  more is about to run (Ctrl-C stops sooner)
     python -m office.watch JOB    everything job JOB's runs did, start to finish
 
 bin/watch.sh runs this in the office container. Run logs are Claude Code's stream-json
-events, compressed and flushed after every event, so a phase can be read while it runs.
+events, compressed and flushed after every event, so a run can be read while it goes.
+The status page lists every job's steps, office's own and the agents'.
 """
 
 from __future__ import annotations
@@ -19,14 +20,14 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import playbook as playbooks
+from . import plan
 from .config import Settings
 from .store import ACTIVE, Job, Store
 
 POLL_SECONDS = 2
 STILL_SECONDS = 120  # quiet this long: say what the worker is on
 QUIET_SECONDS = 600  # nothing logged this long: it may be stuck
-WAIT_SECONDS = 300  # a job should be running but no phase has started: stop watching
+WAIT_SECONDS = 300  # a job should be running but no run has started: stop watching
 BACKLOG = 20  # steps shown from before you started watching
 # The part of a tool call's input that says what it does, in order of preference.
 SUMMARY_KEYS = ("command", "file_path", "path", "pattern", "url", "query", "skill", "description", "prompt")
@@ -133,25 +134,30 @@ def overview(settings: Settings, store: Store, now: datetime) -> list[str]:
 def job_line(settings: Settings, store: Store, job: Job, now: datetime) -> str:
     project = store.project(job.slug)
     try:
-        phases = [p.name for p in playbooks.load(settings.process_dir / "playbooks" / f"{job.playbook}.md").phases]
+        steps = plan.planned(settings, store, job)
     except (OSError, ValueError):
-        phases = []
-    phase = f"{phases[job.phase]} ({job.phase + 1}/{len(phases)})" if job.phase < len(phases) else "finished"
+        steps = []
+    step = plan.current(steps)
     runs = store.runs(job.id)
     last = runs[-1] if runs else None
     state = job.state
-    if job.state == "running" and last and last["outcome"] is None:
+    if job.state == "running" and step and step.kind == "agent" and last and last["outcome"] is None:
         state = f"running for {span(now - _time(last['started_at']))}"
     elif job.state == "waiting":
         state = "waiting on you: reply in its room"
+    elif job.state == "parked" and step and step.summary and step.state == "running" and not step.error:
+        state = step.summary  # waiting for CI
     elif job.state == "parked":
         retry = _time(job.retry_at)
         when = f"in {span(retry - now)}" if retry and retry > now else "now"
-        state = f"retrying {when} (last run: {last['outcome']})" if last else f"starting {when}"
+        if step and step.error:
+            state = f"retrying {when} ({step.error})"
+        else:
+            state = f"retrying {when} (last run: {last['outcome']})" if last else f"starting {when}"
     held = ", project paused" if project.paused else ""
     return (
         f"#{job.id} {project.name} ({job.slug}): {job.kind}, {job.playbook}, {project.model}/{project.effort}."
-        f" {phase}: {state}{held}"
+        f" {plan.where(steps)}: {_short(state, 200)}{held}"
     )
 
 
@@ -187,12 +193,12 @@ def stopped(run: dict | None, job: Job | None) -> str | None:
     if job.state == "killed":
         return "killed"
     if job.state != "running":
-        return "interrupted: office restarted, and the phase runs again"
+        return "interrupted: office restarted, and the step runs again"
     return None
 
 
 def expecting(store: Store, now: datetime) -> bool:
-    """Whether a phase is running or about to: a job is running, queued, or parked until soon."""
+    """Whether a step is running or about to: a job is running, queued, or parked until soon."""
     if store.get("scheduler_paused") == "1":
         return False
     for job in store.jobs(("running", "queued", "parked")):
@@ -212,7 +218,7 @@ def follow(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
-    """The queue, then each phase as it runs, until nothing more is about to."""
+    """The queue, then each agent run as it goes, until nothing more is about to."""
     for line in overview(settings, store, clock()):
         out(line)
     live = live_run(store)
