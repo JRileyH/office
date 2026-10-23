@@ -159,22 +159,29 @@ docker compose up -d --build
 docker compose logs --since 2m office | grep -E 'logged in|ERROR'   # "logged in as @office..."
 ```
 
-A job that was mid-phase reruns that phase when office comes back.
+A job carries on from its current step when office comes back: an agent step
+that was running starts again; office's own steps pick up where they were.
 
 ## Checking on a job
 
+The status page (https://office.unlaunched.dev) lists every unfinished job's
+steps: what's done, with links to the PRs, commits, CI runs and site; what's
+running and for how long; and what comes next. `/jobs/<n>` shows one job.
+
+To follow an agent step as it works:
+
 ```sh
 cd ~/web/office
-bin/watch.sh                # the queue, then the running phase step by step (Ctrl-C stops)
+bin/watch.sh                # the queue, then each agent run as it goes (Ctrl-C stops)
 bin/watch.sh 3              # everything job 3 did, start to finish
 bin/watch.sh 3 > job3.txt   # the same, to keep or paste somewhere
 ```
 
-Each line is one step, timed from the start of the phase: `→` a tool call (the
-command or file), `←` its output (first and last line), `✗` a failed call,
-`says:` what the worker wrote, `┆` a step by one of its subagents, and `■` how
-the phase ended. `bin/watch.sh` keeps going through the next phases and stops
-when nothing more is about to run, for example when the job waits on you.
+Each line is one thing the worker did, timed from the start of the run: `→` a
+tool call (the command or file), `←` its output (first and last line), `✗` a
+failed call, `says:` what the worker wrote, `┆` a subagent's work, and `■` how
+the run ended. `bin/watch.sh` keeps going through the next runs and stops when
+nothing more is about to run, for example when the job waits on you or on CI.
 
 After two quiet minutes it says what the worker is on ("running Bash npm test
 for 4m", "thinking for 3m"). After ten minutes with nothing logged it says the

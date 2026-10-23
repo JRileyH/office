@@ -12,12 +12,22 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
 - **office inbox:** dictate an idea ("a flashcard game for northeastern US
   trees"). office names it, picks a slug, creates `unlaunched/<slug>`, and
   invites you to a new room for that project.
+- **How a job runs:** as a list of steps, written into office's database from
+  the mode's playbook when it starts (`playbooks/`). Agent steps (spec, mvp,
+  review…) are Claude Code runs that each do one piece of work and commit it.
+  Everything else is office's own code, the same every time: pushing, opening a
+  PR, waiting for CI, merging, deploying, the MVP check-in, and telling you it's
+  done. Every playbook ends with deploy then alert, so "Done" means it's live.
+  When CI fails or the deployer refuses a commit, office adds a fix step and
+  tries again; after four fixes it asks you for a hint.
 - **The project's room:** progress shows up here as quiet notices; questions,
   the MVP check-in and "Done" arrive as messages that notify your phone.
-  - Each finished phase posts "✓ phase: what was done" and what's next.
-  - During a phase, the worker posts a "▸" note at each milestone. After 20
-    minutes without news, office says what the worker is on ("Still on mvp (3/6),
-    45m in…"). A phase that logs nothing for 30 minutes is stopped and retried.
+  - Each agent step posts "✓ step: what was done" and what's next; so do PRs
+    and deploys. Failures post "✗ …. Fixing it."
+  - During an agent step, the worker posts a "▸" note at each milestone. After
+    20 minutes without news, office says what the worker is on ("Still on mvp
+    (step 9/24), 45m in…"). A run that logs nothing for 30 minutes is stopped
+    and retried.
   - When office is waiting on you, your reply is the answer ("looks good",
     "make the photos bigger").
   - While it's working, what you say is passed to the next step of the job.
@@ -31,7 +41,7 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   - `!mode reckless|standard|rigorous`: one quick pass; spec, MVP check-in,
     review; or a reviewed spec, thorough tests and two reviews.
   - `!model fable|opus|sonnet|haiku` and `!effort low|medium|high|xhigh|max`:
-    take effect from the next phase.
+    take effect from the next step.
 
   Defaults are `OFFICE_DEFAULT_MODE`, `OFFICE_MODEL` and `OFFICE_EFFORT` in `.env`.
 - **Commands,** in any room (in a project room they apply to that project;
@@ -43,8 +53,9 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   history and logs, and the room. The repo stays on GitHub for you to delete
   (office's token can't). To delete every project at once, run `bin/nuke.sh`
   on the box ("Starting over" in `docs/runbook.md`).
-- **Status page:** https://office.unlaunched.dev lists projects, jobs and runs.
-  For each step a worker takes, as it happens, run `bin/watch.sh` on the box
+- **Status page:** https://office.unlaunched.dev shows each job's steps: done (with
+  links to its PRs, commits, CI runs and site), running, and next.
+  For each thing an agent step does, as it happens, run `bin/watch.sh` on the box
   ("Checking on a job" in `docs/runbook.md`).
 
 ## Local mode
@@ -61,7 +72,8 @@ just test                # both test suites
 
 Status page: http://office.localhost:8800. Matrix: http://matrix.localhost:8800
 (accounts: `tuwunel/README.md`). Set `HARNESS=fake` in `.env` to exercise the
-bot without spending Claude usage: every phase then answers "continue".
+bot without spending Claude usage: every agent step then answers "done", and
+GitHub and deploys are pretended.
 
 ## VPS
 
