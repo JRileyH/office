@@ -44,7 +44,7 @@ def planned(settings: Settings, store: Store, job: Job) -> list[Step]:
         return steps
     project = store.project(job.slug)
     specs = load(settings, job.playbook).for_mode(project.mode)
-    steps = [Step(0, job.id, i, s.kind, s.name, s.max_turns or None) for i, s in enumerate(specs, start=1)]
+    steps = [Step(0, job.id, i, s.kind, s.name, s.max_turns or None, s.optional) for i, s in enumerate(specs, start=1)]
     if job.phase or store.runs(job.id):
         names = LEGACY_PHASES.get(job.playbook, [])[job.phase :]
         resume = next((i for i, s in enumerate(steps) if s.kind == "agent" and s.name in names), 0)

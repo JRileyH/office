@@ -12,5 +12,9 @@ the office image.
 - `feature.md`: changes Riggy asks for in a project's room (steps can be limited
   to some modes).
 
+`optional: true` lets Riggy skip a step from the status page. Use it for reviews,
+docs and the check-in, never for the work itself; office's push-to-deploy steps
+can't be optional (the loader refuses it).
+
 When CI fails or the deployer refuses a commit, office inserts a `fix` agent
 step (instructions in `prompts/fix.md`) and repeats the steps from the last push.

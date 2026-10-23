@@ -24,6 +24,7 @@ services:
       OFFICE_DEFAULT_MODE: ${OFFICE_DEFAULT_MODE:-standard}
       OFFICE_MODEL: ${OFFICE_MODEL:-opus}
       OFFICE_EFFORT: ${OFFICE_EFFORT:-high}
+      OFFICE_WEB_PASSWORD: ${OFFICE_WEB_PASSWORD:-supi}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       GH_TOKEN: ${OFFICE_GITHUB_TOKEN:-}  # workers' token; gh and git (via gh) read GH_TOKEN
       GITHUB_ORG: ${GITHUB_ORG:-unlaunched}

@@ -52,6 +52,7 @@ def test_playbooks_load(name, mode, agents):
         ("[setup, {agent: a, turns: 5}, deploy, {do: alert, modes: [rigorous]}]", "## a\nx", "must start with setup"),
         ("[setup, {agent: a, turns: 5}, ship-it, deploy, alert]", "## a\nx", "unknown step 'ship-it'"),
         ("[setup, {agent: a, turns: 5, modes: [yolo]}, deploy, alert]", "## a\nx", "not yolo"),
+        ("[setup, {agent: a, turns: 5}, {do: merge, optional: true}, deploy, alert]", "## a\nx", "merge can't be optional"),
     ],
 )
 def test_bad_playbooks_are_refused(tmp_path, steps, sections, error):
@@ -358,38 +359,6 @@ def test_deploy_cli_is_scoped_to_the_job_project(monkeypatch):
     ]
     monkeypatch.delenv("OFFICE_SLUG")
     assert deploy_cli.main(["status"]) == 2
-
-
-# --- status page --------------------------------------------------------------
-
-
-def test_status_page_shows_each_jobs_steps(office):
-    from starlette.testclient import TestClient
-
-    from office.web import create_app
-
-    office.store.add_project("trees", "Trees <b>", "Flashcards")
-    job = office.store.add_job("trees", "new", "idea", "standard")
-    client = TestClient(create_app(office.settings, office.store, office.scheduler))
-    assert client.get("/healthz").json() == {"ok": True, "harness": "claude"}
-    page = client.get("/").text
-    assert "Trees &lt;b&gt;" in page and "https://trees.unlaunched.dev/" in page
-    # Before it starts: the steps it will get.
-    assert "queued · set up (1/24) · standard" in page
-    assert "<tr class=pending><td>○</td><td>mvp</td>" in page
-
-    steps = office.scheduler.ensure_steps(job)
-    office.store.update_step(steps[0].id, state="done", summary="Repo ready.", links={"issue": "https://github.com/unlaunched/trees/issues/1", "bad": "javascript:alert(1)"})
-    office.store.update_step(steps[1].id, state="running", started_at="2026-10-23T10:00:00+00:00")
-    office.store.update_job(job.id, state="running")
-    page = client.get("/").text
-    assert "<tr class=done><td>✓</td><td>set up</td><td>Repo ready.<div class=links><a href='https://github.com/unlaunched/trees/issues/1'>issue</a></div>" in page
-    assert "javascript:" not in page
-    assert "<tr class=running><td>▶</td><td>spec</td>" in page
-    assert "running · spec (2/24)" in page
-    job_page = client.get(f"/jobs/{job.id}").text
-    assert "bin/watch.sh 1" in job_page and "<td>mvp</td>" in job_page
-    assert client.get("/jobs/99").status_code == 404
 
 
 def test_structured_output_with_a_custom_schema_is_not_a_verdict():

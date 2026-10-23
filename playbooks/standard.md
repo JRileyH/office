@@ -14,10 +14,10 @@ steps:
   - checks
   - merge
   - deploy
-  - checkin
+  - {do: checkin, optional: true}
   - {agent: buildout, turns: 400}
-  - {agent: review, turns: 150}
-  - {agent: docs, turns: 80}
+  - {agent: review, turns: 150, optional: true}
+  - {agent: docs, turns: 80, optional: true}
   - push
   - pr
   - checks

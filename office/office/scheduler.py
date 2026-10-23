@@ -48,9 +48,9 @@ HEARTBEAT_SECONDS = 20 * 60  # no news from an agent step this long: say what it
 # Nothing logged this long and the run is stopped and retried. Claude Code logs while it
 # thinks, and its commands time out after ten minutes, so a live run is never this quiet.
 STUCK_SECONDS = 30 * 60
-# Never handed to workers: they talk to Riggy through verdicts, not as the bot,
-# and only Riggy's !delete deletes a project's data.
-WORKER_ENV_DENY = frozenset({"OFFICE_MATRIX_PASSWORD", "DEPLOYER_ADMIN_SECRET"})
+# Never handed to workers: they talk to Riggy through verdicts, not as the bot, only
+# Riggy's !delete deletes a project's data, and only he changes jobs on the status page.
+WORKER_ENV_DENY = frozenset({"OFFICE_MATRIX_PASSWORD", "DEPLOYER_ADMIN_SECRET", "OFFICE_WEB_PASSWORD"})
 # Office's own steps whose results are posted in the project's room. The rest (setup,
 # push, CI, merge) show on the status page; failures are always posted.
 ANNOUNCED = {"pr", "deploy"}

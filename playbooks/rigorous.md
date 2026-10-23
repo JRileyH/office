@@ -2,7 +2,7 @@
 steps:
   - setup
   - {agent: spec, turns: 120}
-  - {agent: spec-review, turns: 80}
+  - {agent: spec-review, turns: 80, optional: true}
   - {agent: scaffold, turns: 200}
   - push
   - pr
@@ -15,11 +15,11 @@ steps:
   - checks
   - merge
   - deploy
-  - checkin
+  - {do: checkin, optional: true}
   - {agent: buildout, turns: 500}
-  - {agent: review, turns: 200}
-  - {agent: second-pass, turns: 150}
-  - {agent: docs, turns: 100}
+  - {agent: review, turns: 200, optional: true}
+  - {agent: second-pass, turns: 150, optional: true}
+  - {agent: docs, turns: 100, optional: true}
   - push
   - pr
   - checks

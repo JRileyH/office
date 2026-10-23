@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS steps (
     kind TEXT NOT NULL,              -- agent, or one of office's own (playbook.CODE_STEPS)
     name TEXT NOT NULL,
     max_turns INTEGER,
+    optional INTEGER NOT NULL DEFAULT 0,  -- Riggy may skip it
     state TEXT NOT NULL DEFAULT 'pending',
     summary TEXT,                    -- what it did, or what it's waiting for
     problem TEXT,                    -- a fix step's: what to fix
@@ -92,6 +93,7 @@ MIGRATIONS = {
         "effort": "TEXT NOT NULL DEFAULT 'high'",
     },
     "runs": {"step_id": "INTEGER"},
+    "steps": {"optional": "INTEGER NOT NULL DEFAULT 0"},
 }
 
 # Jobs in these states hold or want the worker slot, or wait on Riggy; anything else is finished.
@@ -150,6 +152,7 @@ class Step:
     kind: str
     name: str
     max_turns: int | None = None
+    optional: bool = False
     state: str = "pending"  # pending | running | waiting | done | skipped | failed
     summary: str | None = None
     problem: str | None = None
@@ -328,9 +331,9 @@ class Store:
                 )
             for i, s in enumerate(steps, start=after + 1):
                 self.db.execute(
-                    "INSERT INTO steps (job_id, position, kind, name, max_turns, state, summary, problem, links)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (job_id, i, s.kind, s.name, s.max_turns, s.state, s.summary, s.problem, json.dumps(s.links)),
+                    "INSERT INTO steps (job_id, position, kind, name, max_turns, optional, state, summary, problem, links)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (job_id, i, s.kind, s.name, s.max_turns, int(s.optional), s.state, s.summary, s.problem, json.dumps(s.links)),
                 )
 
     def steps(self, job_id: int) -> list[Step]:
@@ -377,6 +380,7 @@ class Store:
 def _step(row: sqlite3.Row) -> Step:
     data = dict(row)
     data["links"] = json.loads(data["links"] or "{}")
+    data["optional"] = bool(data["optional"])
     return Step(**data)
 
 

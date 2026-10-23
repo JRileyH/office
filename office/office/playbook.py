@@ -5,7 +5,7 @@ section of instructions per agent step.
     steps:
       - setup
       - {agent: spec, turns: 80}
-      - {agent: review, turns: 150, modes: [standard, rigorous]}
+      - {agent: review, turns: 150, modes: [standard, rigorous], optional: true}
       - push
       - pr
       - checks
@@ -21,7 +21,9 @@ section of instructions per agent step.
 An agent step is one headless Claude Code run that does a piece of work and commits it.
 Every other step is office's own code (CODE_STEPS), so pushing, pull requests, CI,
 merging, deploying and telling Riggy happen the same way every time. `modes` limits a
-step to projects in those modes. The model and effort come from the project.
+step to projects in those modes; `optional` lets Riggy skip it from the status page
+(a review, say, but never the work itself or office's push-to-deploy steps). The model
+and effort come from the project.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from .store import MODES
 SECTION_RE = re.compile(r"^## +(\S+) *$", re.M)
 CODE_STEPS = ("setup", "push", "pr", "checks", "merge", "push-main", "deploy", "checkin", "alert")
 FIRST, LAST = ("setup",), ("deploy", "alert")  # every job starts and ends this way, in every mode
+SKIPPABLE = ("checkin",)  # office's only step that can be optional: skipping it means "looks good"
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class StepSpec:
     max_turns: int = 0
     instructions: str = ""
     modes: tuple[str, ...] = ()  # empty: every mode
+    optional: bool = False  # Riggy may skip it
 
 
 @dataclass(frozen=True)
@@ -88,14 +92,17 @@ def _step(path: Path, entry: str | dict, sections: dict[str, str]) -> StepSpec:
     if isinstance(entry, str):
         entry = {"do": entry}
     modes = tuple(entry.get("modes") or ())
+    optional = entry.get("optional") is True
     if set(modes) - set(MODES):
         raise ValueError(f"{path}: modes are {', '.join(MODES)}, not {', '.join(sorted(set(modes) - set(MODES)))}")
     if "agent" in entry:
         name = entry["agent"]
         if name not in sections:
             raise ValueError(f"{path}: agent step {name} has no '## {name}' section")
-        return StepSpec("agent", name, int(entry["turns"]), sections[name], modes)
+        return StepSpec("agent", name, int(entry["turns"]), sections[name], modes, optional)
     kind = entry.get("do")
     if kind not in CODE_STEPS:
         raise ValueError(f"{path}: unknown step {kind!r}; office's steps are {', '.join(CODE_STEPS)}")
-    return StepSpec(kind, kind, modes=modes)
+    if optional and kind not in SKIPPABLE:
+        raise ValueError(f"{path}: {kind} can't be optional; of office's steps only {', '.join(SKIPPABLE)} can")
+    return StepSpec(kind, kind, modes=modes, optional=optional)

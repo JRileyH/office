@@ -27,6 +27,8 @@ class Settings:
     default_mode: str = "standard"
     default_model: str = "opus"
     default_effort: str = "high"
+    # Signs Riggy in on the status page to change things. Change it in .env.
+    web_password: str = "supi"
 
     @classmethod
     def from_env(cls, env: dict[str, str] = os.environ) -> Settings:
@@ -55,6 +57,7 @@ class Settings:
             state_dir=Path(env.get("OFFICE_STATE_DIR", "/var/lib/office")),
             workspace_dir=Path(env.get("OFFICE_WORKSPACE_DIR", "/workspace")),
             process_dir=Path(env.get("OFFICE_PROCESS_DIR", "/opt/office")),
+            web_password=env.get("OFFICE_WEB_PASSWORD") or "supi",
             **defaults,
         )
 

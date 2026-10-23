@@ -2,9 +2,9 @@
 steps:
   - setup
   - {agent: change, turns: 400}
-  - {agent: review, turns: 150, modes: [standard, rigorous]}
-  - {agent: second-pass, turns: 150, modes: [rigorous]}
-  - {agent: docs, turns: 60}
+  - {agent: review, turns: 150, modes: [standard, rigorous], optional: true}
+  - {agent: second-pass, turns: 150, modes: [rigorous], optional: true}
+  - {agent: docs, turns: 60, optional: true}
   - push
   - pr
   - checks
