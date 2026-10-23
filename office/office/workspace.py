@@ -272,6 +272,11 @@ class GitHubWorkspace:
         """The workflow runs on a commit, judged the way the deployer judges them."""
         repo = f"{self.org}/{slug}"
         code, out = await run("gh", "api", f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100")
+        if code != 0 and "not accessible by personal access token" in out:
+            raise WorkspaceError(
+                "office's GitHub token (OFFICE_GITHUB_TOKEN) can't read CI: give it Actions read-only "
+                "on GitHub (Settings, Developer settings, its fine-grained token), then reply here"
+            )
         if code != 0:
             raise WorkspaceError(f"reading CI on {slug}: {out[-300:]}")
         latest: dict[int, dict] = {}

@@ -131,7 +131,8 @@ bin/check-neighbors.sh | diff var/neighbors-before.txt - && echo unchanged
 
 Needs the workers' token (`OFFICE_GITHUB_TOKEN` in `.env`: fine-grained,
 `unlaunched`, all repositories, repository creation plus Contents, Pull
-requests, Issues and Workflows read and write).
+requests, Issues and Workflows read and write, and Actions read-only: office
+reads CI on PRs and main itself before merging and deploying).
 
 ```sh
 cd ~/web/office

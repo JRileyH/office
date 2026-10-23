@@ -500,3 +500,14 @@ def test_deployer_client_deploys_and_says_what_to_fix():
     assert asyncio.run(d.deploy("trees", "crash")).problem == "didn't answer\n\nLogs:\nError: EADDRINUSE"
     with pytest.raises(DeployerError, match="GitHub returned 401"):  # office's setup, not the project's code
         asyncio.run(d.deploy("trees", "config"))
+
+
+def test_a_token_without_actions_access_says_how_to_fix_it(checkout, monkeypatch):
+    from office import workspace
+
+    async def forbidden(*args, cwd=None):
+        return 1, '{"message":"Resource not accessible by personal access token","status":"403"}'
+
+    monkeypatch.setattr(workspace, "run", forbidden)
+    with pytest.raises(workspace.WorkspaceError, match="give it Actions read-only"):
+        asyncio.run(checkout.ci("trees", "abc"))
