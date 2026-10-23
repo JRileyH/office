@@ -53,10 +53,16 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   history and logs, and the room. The repo stays on GitHub for you to delete
   (office's token can't). To delete every project at once, run `bin/nuke.sh`
   on the box ("Starting over" in `docs/runbook.md`).
-- **Status page:** https://office.unlaunched.dev shows each job's steps: done (with
-  links to its PRs, commits, CI runs and site), running, and next.
-  For each thing an agent step does, as it happens, run `bin/watch.sh` on the box
-  ("Checking on a job" in `docs/runbook.md`).
+- **Status page:** https://office.unlaunched.dev, made for a phone. One lane per
+  project: its job's steps as a strip of dots, what the running step is doing
+  (what the worker says, its ▸ notes and a live tail), what's next, and what's
+  done with links to PRs, commits, CI runs and the site. It refreshes itself.
+  Anyone can look; sign in with `OFFICE_WEB_PASSWORD` (default `supi`; change it
+  in `.env`) for 24 hours of controls: skip optional steps (reviews, docs, the
+  MVP check-in) or undo that, run a job next or last, pause a project or all
+  work, stop a job, change model and effort, and send a job a note or answer.
+  For everything an agent step does, run `bin/watch.sh` on the box ("Checking on
+  a job" in `docs/runbook.md`).
 
 ## Local mode
 

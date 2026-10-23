@@ -164,9 +164,12 @@ that was running starts again; office's own steps pick up where they were.
 
 ## Checking on a job
 
-The status page (https://office.unlaunched.dev) lists every unfinished job's
-steps: what's done, with links to the PRs, commits, CI runs and site; what's
-running and for how long; and what comes next. `/jobs/<n>` shows one job.
+The status page (https://office.unlaunched.dev) has a lane per project: what's
+done, with links to the PRs, commits, CI runs and site; what's running, with a
+live tail; and what comes next. `/jobs/<n>` shows one job. Signed in (the
+`OFFICE_WEB_PASSWORD` in `.env`, default `supi`), it can skip optional steps,
+reorder the queue, pause, stop and send notes. Anyone can see the page, so set
+your own password: the default is easy to guess.
 
 To follow an agent step as it works:
 
