@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import plan
+from .cards import Cards
 from .config import Settings
 from .deployer_client import Deployer, DeployerError
 from .harness import VERDICTS, WRAPUP_SCHEMA, Harness, RunResult
@@ -91,6 +92,7 @@ class Scheduler:
         self.workspace = workspace
         self.prompts = prompts
         self.deployer = deployer
+        self.cards = Cards(settings, store, harness)
         self.current: tuple[int, asyncio.Task] | None = None
         self._wake = asyncio.Event()
 
@@ -137,6 +139,7 @@ class Scheduler:
         for job in self.store.jobs(ACTIVE):
             if self.store.runs(job.id):  # under way from before steps were tracked
                 self.ensure_steps(job)
+        self.backfill = asyncio.create_task(self.missing_cards())
         while True:
             job = None if self.paused else self.store.next_job()
             if job is None:
@@ -456,6 +459,8 @@ class Scheduler:
             problem = f"The deployer couldn't deploy {sha[:7]}:\n{deployment.problem}"
             return Outcome("fix", f"the deployer refused {sha[:7]}", {"commit": self.commit_url(project, sha)}, problem)
         url = self.settings.project_url(project.slug)
+        if self.store.card(project.slug) is None:  # live for the first time: on the projects page
+            await self.refresh_card(project)
         return Outcome("done", f"{sha[:7]} is live.", {"site": url, "commit": self.commit_url(project, sha)})
 
     async def do_checkin(self, job: Job, project: Project, step: Step) -> Outcome:
@@ -479,7 +484,21 @@ class Scheduler:
         message = plan.last_said(self.store.steps(job.id)) or f"{project.name} is live."
         await self.say(project, _join(f"Done: {message}", url))
         await self.status(f"Finished job {job.id} on {project.name}: {url}", notice=True)
+        await self.refresh_card(project)  # what it is now, on the projects page
         return Outcome("done", "Told you it's live.", {"site": url})
+
+    async def refresh_card(self, project: Project) -> None:
+        """The project's card on the projects page (cards.py). Never holds up or fails a step."""
+        try:
+            await self.cards.refresh(self.store.project(project.slug) or project, self.workspace.path(project.slug))
+        except Exception:
+            log.exception("couldn't make the card for %s", project.slug)
+
+    async def missing_cards(self) -> None:
+        """Cards for live projects that don't have one yet: those live before cards existed."""
+        for project, _ in self.store.live_projects():
+            if self.store.card(project.slug) is None:
+                await self.refresh_card(project)
 
     async def wait_for_ci(self, project: Project, step: Step, sha: str, what: str) -> Outcome:
         ci = await self.workspace.ci(project.slug, sha)

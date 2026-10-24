@@ -14,7 +14,7 @@ import yaml
 
 SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,30}")
 RESERVED_SLUGS = frozenset(
-    {"office", "matrix", "www", "status", "traefik", "deployer", "api", "mail"}
+    {"office", "projects", "matrix", "www", "status", "traefik", "deployer", "api", "mail"}
 )
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 

@@ -160,6 +160,10 @@ docker compose up -d --build
 docker compose logs --since 2m office | grep -E 'logged in|ERROR'   # "logged in as @office..."
 ```
 
+The deployer writes the routes for office's own hosts (office. and projects.)
+when it starts, so a change to them needs the deployer rebuilt too, which
+`docker compose up -d --build` does.
+
 A job carries on from its current step when office comes back: an agent step
 that was running starts again; office's own steps pick up where they were.
 

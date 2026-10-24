@@ -101,7 +101,7 @@ def page(title: str, body: str, signed_in: bool, paused: bool, flash: str = "", 
 <meta name=viewport content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name=theme-color content="#0f172a">
 <title>{escape(title)}</title><style>{STYLE}</style>
-<header class=top><a href=/ class=brand>office</a><nav><a href=/insights class=navlink>Insights</a>{pause}{auth}</nav></header>
+<header class=top><a href=/ class=brand>office</a><nav><a href=/projects class=navlink>Projects</a><a href=/insights class=navlink>Insights</a>{pause}{auth}</nav></header>
 {banner}{flash_html}<main id=lanes>{body}</main>
 <dialog id=sheet aria-label='Step'><button class='quiet close' aria-label=Close>✕</button><div class=sheet-body></div></dialog>
 <script>{SCRIPT}</script></html>"""

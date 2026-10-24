@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 # Same rules as the deployer's, so every slug office picks deploys.
 SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,30}")
-RESERVED = frozenset({"office", "matrix", "www", "status", "traefik", "deployer", "api", "mail"})
+RESERVED = frozenset({"office", "projects", "matrix", "www", "status", "traefik", "deployer", "api", "mail"})
 TRIAGE_MODEL = "haiku"
 SCHEMA = {
     "type": "object",

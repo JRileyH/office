@@ -53,6 +53,7 @@ COPY office/pyproject.toml office/uv.lock ./
 RUN uv sync --frozen --no-dev
 COPY office/office ./office
 COPY --chmod=755 office/tools/office-screenshot.mjs /usr/local/bin/office-screenshot
+COPY --chmod=755 office/tools/office-card-shot.mjs /usr/local/bin/office-card-shot
 # Workers deploy their own project through this (skills/deploy.md).
 RUN printf '#!/bin/sh\nexec /opt/office/app/.venv/bin/python -m office.deploy_cli "$@"\n' > /usr/local/bin/office-deploy \
     && chmod 755 /usr/local/bin/office-deploy

@@ -60,8 +60,13 @@ def route(slug: str, port: int, base_domain: str) -> dict:
 
 
 def office_route(base_domain: str) -> dict:
-    """The status page at office.<base_domain>. `office` is a reserved slug, so no project can claim it."""
-    return _route("office", base_domain, "http://office:8000")
+    """office's own hosts: the status page at office.<base_domain> and the projects page at
+    projects.<base_domain>. Both are reserved slugs, so no project can claim them."""
+    routes = _route("office", base_domain, "http://office:8000")
+    routes["http"]["routers"]["projects"] = {
+        "rule": f"Host(`projects.{base_domain}`)", "entryPoints": ["web"], "service": "office"
+    }
+    return routes
 
 
 def _route(name: str, base_domain: str, url: str) -> dict:

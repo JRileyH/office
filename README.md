@@ -58,6 +58,13 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   history and logs, and the room. The repo stays on GitHub for you to delete
   (office's token can't). To delete every project at once, run `bin/nuke.sh`
   on the box ("Starting over" in `docs/runbook.md`).
+- **Projects page:** https://projects.unlaunched.dev, public: a card for each
+  live project with a screenshot, a tagline, a description, tags ("Game",
+  "Flashcards") and a button that says what you'll do there (Play, Open, Use,
+  Visit). Cards are written by a quick haiku call from the project's README and
+  brief, with a screenshot of the live site, when a project first goes live and
+  again at the end of every job. Projects live before this get theirs when
+  office starts.
 - **Status page:** https://office.unlaunched.dev, made for a phone. At the top,
   what needs you and what's coming up when, in words, across projects. Then a
   lane per project: its job drawn as a line through its steps, like a git graph

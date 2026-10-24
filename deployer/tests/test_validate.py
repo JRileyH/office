@@ -139,7 +139,7 @@ def test_bad_slugs(slug):
     assert excinfo.value.reasons == ["slug must match ^[a-z0-9][a-z0-9-]{1,30}$ and not end in `-`"]
 
 
-@pytest.mark.parametrize("slug", ["office", "matrix", "www", "status", "traefik", "deployer", "api", "mail"])
+@pytest.mark.parametrize("slug", ["office", "projects", "matrix", "www", "status", "traefik", "deployer", "api", "mail"])
 def test_reserved_slugs(slug):
     with pytest.raises(Rejected) as excinfo:
         check_slug(slug)
@@ -340,3 +340,14 @@ services:
         "services reach each other over the project network)",
         "service `web`: a memory limit is required (for example mem_limit: 128m)",
     ]
+
+
+def test_office_has_both_its_hosts():
+    from deployer.compose import office_route
+
+    routers = office_route("unlaunched.dev")["http"]["routers"]
+    assert {name: r["rule"] for name, r in routers.items()} == {
+        "office": "Host(`office.unlaunched.dev`)",
+        "projects": "Host(`projects.unlaunched.dev`)",
+    }
+    assert {r["service"] for r in routers.values()} == {"office"}

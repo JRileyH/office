@@ -10,7 +10,8 @@ from office import plan
 from office.bot import Bot
 from office.config import Settings
 from office.deployer_client import DeployerError, Deployment
-from office.harness import FakeHarness
+from office.cards import Cards
+from office.harness import FakeHarness, RunResult
 from office.matrix import Message
 from office.prompts import Prompts
 from office.scheduler import Scheduler
@@ -125,6 +126,22 @@ class Office:
             self.settings, self.store, self.chat, self.scheduler, self.harness, self.workspace, self.prompts, self.deployer
         )
         self.bot.start_delay = timedelta(0)  # no grace period in tests
+        # Cards get their own scripted model and a pretend browser, out of the way of the job's script.
+        self.card_calls: list = []
+        self.shots: list[str] = []
+        self.scheduler.cards = Cards(self.settings, self.store, FakeHarness(self.card), shoot=self.shoot)
+
+    def card(self, call) -> RunResult:
+        self.card_calls.append(call)
+        card = {"tagline": "Name that tree", "description": "Flip cards until you know them.", "kind": "game",
+                "tags": ["Game", "Trees", "Flashcards"]}  # fmt: skip
+        return RunResult("verdict", verdict=card)
+
+    async def shoot(self, url: str, path: Path) -> bool:
+        self.shots.append(url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xd8jpeg")
+        return True
 
     async def say(self, room_id: str, body: str) -> None:
         await self.bot.handle(Message(room_id, OWNER, body, f"$in{len(self.chat.sent)}"))

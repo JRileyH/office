@@ -327,3 +327,75 @@ def test_public_view_keeps_what_it_is_doing_but_not_how():
     )  # fmt: skip
     assert [line.text for line in view(lines, signed_in=False)] == ["Read src/a.ts", "Bash"]
     assert [line.text for line in view(lines, signed_in=True)] == ["Read src/a.ts", "Bash echo •••"]
+
+
+# --- the projects page -------------------------------------------------------------
+
+
+def test_projects_get_a_card_when_they_go_live_and_again_when_a_job_ends(office):
+    async def go():
+        from test_flow import new_project, verdict
+
+        await new_project(office, [verdict("done", "a flashcard deck")] * 3)
+        await office.until("mvp")  # the scaffold deployed: live for the first time
+        card = office.store.card("tree-cards")
+        assert (card.tagline, card.kind, card.tags, card.image) == ("Name that tree", "game", ["Game", "Trees", "Flashcards"], "tree-cards.jpg")
+        assert office.shots == ["https://tree-cards.unlaunched.dev/"] and len(office.card_calls) == 1
+        call = office.card_calls[0]
+        assert (call.model, call.label) == ("haiku", "card") and "a flashcard game for identifying" in call.prompt
+        await office.until("your check-in")  # the MVP deployed too, but the card stays until the job ends
+        assert len(office.card_calls) == 1
+        await office.step()  # asks Riggy to try it
+        await office.say(office.store.project("tree-cards").room_id, "looks good")
+        await office.finish()
+        assert len(office.card_calls) == 2 and len(office.shots) == 2
+
+        # Deleting the project takes its card and screenshot with it.
+        image = office.settings.state_dir / "cards" / "tree-cards.jpg"
+        assert image.exists()
+        await office.say(office.store.project("tree-cards").room_id, "!delete tree-cards")
+        assert office.store.card("tree-cards") is None and not image.exists()
+
+    asyncio.run(go())
+
+
+def test_a_card_that_cant_be_made_keeps_what_it_had(office):
+    from office.cards import Cards
+    from office.harness import FakeHarness, RunResult
+
+    async def go():
+        project = office.store.add_project("trees", "Trees", "Learn trees.")
+        broken = Cards(office.settings, office.store, FakeHarness(lambda call: RunResult("error", error="boom")),
+                       shoot=lambda url, path: _false())  # fmt: skip
+        card = await broken.refresh(project, office.settings.workspace_dir / "trees")
+        assert (card.description, card.kind, card.image) == ("Learn trees.", "app", None)  # the summary stands in
+        await office.scheduler.cards.refresh(project, office.settings.workspace_dir / "trees")
+        card = await broken.refresh(project, office.settings.workspace_dir / "trees")
+        assert (card.tagline, card.image) == ("Name that tree", "trees.jpg")  # the last good one stays
+
+    async def _false():
+        return False
+
+    asyncio.run(go())
+
+
+def test_the_projects_page(office, page):
+    store = office.store
+    store.add_project("birds", "Birds", "Spot birds.")  # not live: not shown
+    store.add_job("birds", "new", "birds", "standard")
+    start(office, page.job, "mvp")  # trees deployed its scaffold
+    projects = TestClient(create_app(office.settings, store, office.scheduler), base_url="https://projects.unlaunched.dev")
+    html = projects.get("/").text
+    assert "Trees &lt;b&gt;" in html and "Flashcards" in html and ">Open <span" in html  # no card yet: the summary
+    assert "Birds" not in html and "https://trees.unlaunched.dev/" in html and "class=placeholder" in html
+    assert projects.get("/jobs/1").status_code == 404 and projects.get("/insights").status_code == 404  # only this page
+
+    asyncio.run(office.scheduler.refresh_card(store.project("trees")))
+    html = projects.get("/").text
+    assert ">Play <span" in html and "Name that tree" in html and "<li>Trees</li>" in html
+    image = html.split("<img src='")[1].split("'")[0]
+    assert image.startswith("/cards/trees.jpg?v=")
+    r = projects.get(image)
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert projects.get("/cards/birds.jpg").status_code == 404 and projects.get("/cards/..%2Foffice.db").status_code == 404
+    assert "Name that tree" in page.get("/projects").text  # on office's own host too, linked from the status page

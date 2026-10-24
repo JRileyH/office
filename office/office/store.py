@@ -86,6 +86,16 @@ CREATE TABLE IF NOT EXISTS steps (
     model TEXT,                      -- Riggy's choice for this step, over the defaults
     effort TEXT
 );
+-- What the projects page shows for a live project (cards.py).
+CREATE TABLE IF NOT EXISTS cards (
+    slug TEXT PRIMARY KEY,
+    tagline TEXT NOT NULL,
+    description TEXT NOT NULL,
+    kind TEXT NOT NULL,              -- game | app | tool | site: says what its button does
+    tags TEXT NOT NULL DEFAULT '[]', -- JSON list, a few words each
+    image TEXT,                      -- screenshot file name in <state>/cards, once one's taken
+    updated_at TEXT NOT NULL
+);
 -- The model and effort for each kind of agent step (its name: spec, docs, fix…), set on
 -- the status page. Empty means not set here. The name '*' is every other kind.
 CREATE TABLE IF NOT EXISTS defaults (
@@ -134,6 +144,17 @@ class Project:
     room_id: str | None
     paused: bool
     created_at: str
+
+
+@dataclass
+class Card:
+    slug: str
+    tagline: str
+    description: str
+    kind: str
+    tags: list[str] = field(default_factory=list)
+    image: str | None = None
+    updated_at: str = ""
 
 
 @dataclass
@@ -250,6 +271,7 @@ class Store:
             )
             room = self.db.execute("SELECT room_id FROM projects WHERE slug = ?", (old,)).fetchone()["room_id"]
             self.db.execute("UPDATE jobs SET slug = ? WHERE slug = ?", (new, old))
+            self.db.execute("UPDATE cards SET slug = ? WHERE slug = ?", (new, old))
             self.db.execute("DELETE FROM projects WHERE slug = ?", (old,))
             self.db.execute("UPDATE projects SET room_id = ? WHERE slug = ?", (room, new))
         return self.project(new)
@@ -264,8 +286,38 @@ class Store:
             self.db.execute(f"DELETE FROM runs WHERE job_id IN ({jobs})", (slug,))
             self.db.execute(f"DELETE FROM steps WHERE job_id IN ({jobs})", (slug,))
             self.db.execute("DELETE FROM jobs WHERE slug = ?", (slug,))
+            self.db.execute("DELETE FROM cards WHERE slug = ?", (slug,))
             self.db.execute("DELETE FROM projects WHERE slug = ?", (slug,))
         return ids
+
+    def live_projects(self) -> list[tuple[Project, str]]:
+        """Projects with a site: deployed by a step, or with a finished job (from before steps
+        were tracked). With when they last went live, latest first."""
+        rows = self.db.execute(
+            "SELECT projects.*, MAX(COALESCE(steps.ended_at, jobs.updated_at)) AS live_at FROM projects"
+            " JOIN jobs USING (slug) LEFT JOIN steps ON steps.job_id = jobs.id AND steps.kind = 'deploy' AND steps.state = 'done'"
+            " WHERE steps.id IS NOT NULL OR jobs.state = 'done' GROUP BY projects.slug ORDER BY live_at DESC"
+        )
+        found = []
+        for r in rows:
+            data = dict(r)
+            live_at = data.pop("live_at")
+            found.append((_project(data), live_at))
+        return found
+
+    # --- cards ----------------------------------------------------------------
+
+    def card(self, slug: str) -> Card | None:
+        row = self.db.execute("SELECT * FROM cards WHERE slug = ?", (slug,)).fetchone()
+        return Card(**{**dict(row), "tags": json.loads(row["tags"])}) if row else None
+
+    def put_card(self, card: Card) -> Card:
+        self.db.execute(
+            "INSERT OR REPLACE INTO cards (slug, tagline, description, kind, tags, image, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (card.slug, card.tagline, card.description, card.kind, json.dumps(card.tags), card.image, now()),
+        )
+        return self.card(card.slug)
 
     # --- jobs -----------------------------------------------------------------
 
@@ -449,7 +501,7 @@ def _step(row: sqlite3.Row | dict) -> Step:
     return Step(**data)
 
 
-def _project(row: sqlite3.Row) -> Project:
+def _project(row: sqlite3.Row | dict) -> Project:
     data = dict(row)
     data["paused"] = bool(data["paused"])
     return Project(**data)

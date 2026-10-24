@@ -25,10 +25,11 @@ from urllib.parse import parse_qs, quote
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from starlette.routing import Route
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.routing import Host, Route, Router
 
-from . import insights, pages, plan
+from . import gallery, insights, pages, plan
+from .cards import fallback
 from .config import Settings
 from .control import Control, ControlError
 from .live import LiveRuns
@@ -264,6 +265,27 @@ def create_app(settings: Settings, store: Store, scheduler: Scheduler) -> Starle
         )  # fmt: skip
         return respond(request, "office: insights", body, signed)
 
+    async def projects_page(request: Request) -> Response:
+        """Every live project as a card, for anyone (gallery.py)."""
+        palette = colors()
+        entries = []
+        for project, live_at in store.live_projects():
+            card = store.card(project.slug) or fallback(project)
+            image = f"/cards/{card.image}?v={quote(card.updated_at)}" if card.image else None
+            entries.append(
+                gallery.Entry(project, card, settings.project_url(project.slug), image, live_at, palette.get(project.slug, 1))
+            )
+        html = gallery.page(entries, datetime.now(UTC))
+        return HTMLResponse(html, headers={"Cache-Control": "public, max-age=60"})
+
+    async def card_image(request: Request) -> Response:
+        name = request.path_params["name"]
+        card = store.card(name.removesuffix(".jpg"))
+        path = scheduler.cards.image_path(card) if card else None
+        if path is None or path.name != name or not path.is_file():
+            return Response("No such image.", 404)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
     async def job_page(request: Request) -> Response:
         job = store.job(request.path_params["job_id"])
         if job is None:
@@ -323,9 +345,20 @@ def create_app(settings: Settings, store: Store, scheduler: Scheduler) -> Starle
             message = str(e)
         return _back(form, message)
 
+    projects_host = Router(
+        routes=[
+            Route("/", projects_page),
+            Route("/cards/{name}", card_image),
+            Route("/healthz", healthz),
+        ]
+    )
     return Starlette(
         routes=[
+            # projects.<domain> shows only the projects page; everything else is office.<domain>.
+            Host(f"projects.{settings.base_domain}", projects_host),
             Route("/healthz", healthz),
+            Route("/projects", projects_page),
+            Route("/cards/{name}", card_image),
             Route("/", index),
             Route("/jobs/{job_id:int}", job_page),
             Route("/jobs/{job_id:int}/planned/{position:int}", planned_page),
