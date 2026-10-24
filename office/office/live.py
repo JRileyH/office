@@ -57,6 +57,11 @@ class LiveRuns:
             live.lines.extend(self.describe(event, live.started))
         return list(live.lines)
 
+    def transcript(self, run: dict) -> list[Line]:
+        """Everything a run did, from the start: for a step's history."""
+        started = _time(run["started_at"])
+        return [line for event in Tail(Path(run["log_path"])).events() for line in self.describe(event, started)]
+
     def forget(self, keep: set[int]) -> None:
         """Drop runs that have ended."""
         for run_id in set(self.runs) - keep:

@@ -40,10 +40,15 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   Peeper, rigorous, opus, max effort") or change them later in the room:
   - `!mode reckless|standard|rigorous`: one quick pass; spec, MVP check-in,
     review; or a reviewed spec, thorough tests and two reviews.
-  - `!model fable|opus|sonnet|haiku` and `!effort low|medium|high|xhigh|max`:
-    take effect from the next step.
+  - `!model fable|opus|sonnet|haiku|default` and
+    `!effort low|medium|high|xhigh|max|default`: for all the project's agent
+    steps, from the next one; `default` goes back to each step's default.
 
-  Defaults are `OFFICE_DEFAULT_MODE`, `OFFICE_MODEL` and `OFFICE_EFFORT` in `.env`.
+  The model and effort are chosen per step, the most specific choice winning:
+  one step's (set in its sheet on the status page), then the project's, then
+  the default for that kind of step (set on the status page's Insights), then
+  `OFFICE_MODEL` and `OFFICE_EFFORT` in `.env`. The default mode is
+  `OFFICE_DEFAULT_MODE`.
 - **Commands,** in any room (in a project room they apply to that project;
   elsewhere put its slug first): `!help`, `!queue`, `!status`, `!mode`,
   `!model`, `!effort`, `!rename <name>`, `!slug <new-slug>` (moves the repo and
@@ -53,14 +58,23 @@ Everything happens in Element X, signed in as `@riggy:matrix.unlaunched.dev`.
   history and logs, and the room. The repo stays on GitHub for you to delete
   (office's token can't). To delete every project at once, run `bin/nuke.sh`
   on the box ("Starting over" in `docs/runbook.md`).
-- **Status page:** https://office.unlaunched.dev, made for a phone. One lane per
-  project: its job's steps as a strip of dots, what the running step is doing
-  (what the worker says, its ▸ notes and a live tail), what's next, and what's
-  done with links to PRs, commits, CI runs and the site. It refreshes itself.
-  Anyone can look; sign in with `OFFICE_WEB_PASSWORD` (default `supi`; change it
-  in `.env`) for 24 hours of controls: skip optional steps (reviews, docs, the
-  MVP check-in) or undo that, run a job next or last, pause a project or all
-  work, stop a job, change model and effort, and send a job a note or answer.
+- **Status page:** https://office.unlaunched.dev, made for a phone. At the top,
+  what needs you and what's coming up when, in words, across projects. Then a
+  lane per project: its job drawn as a line through its steps, like a git graph
+  (work on the branch above, merges dropping to main and deploys below), solid
+  as far as it's got and dashed after, with how long each step took or when it
+  should start. Below it, where the job is and when it goes live, and what the
+  running step is doing (what the worker says, its ▸ notes and a live tail).
+  Tap any step for its sheet: what it did, with its runs, usage and transcript;
+  what it's doing now; or, before it starts, when it should and what it will run
+  on. It refreshes itself. **Insights** shows where the time and Claude usage go
+  by kind of step, project and model, the slowest and costliest steps, and the
+  default model and effort for each kind of step. Anyone can look; sign in with
+  `OFFICE_WEB_PASSWORD` (default `supi`; change it in `.env`) for 24 hours of
+  controls: skip optional steps (reviews, docs, the MVP check-in) or undo that,
+  give one upcoming step its own model, effort or context, run a job next or
+  last, pause a project or all work, stop a job, set a project's or a kind of
+  step's model and effort, and send a job a note or answer.
   For everything an agent step does, run `bin/watch.sh` on the box ("Checking on
   a job" in `docs/runbook.md`).
 

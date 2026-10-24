@@ -59,9 +59,11 @@ def test_anyone_sees_each_project_as_a_lane(office, page):
     html = page.get("/").text
     assert "Trees &lt;b&gt;" in html and "https://trees.unlaunched.dev/" in html
     assert "queued</span> 0 of 24 steps" in html
-    assert html.count("<li class='pending") == 24  # the strip: the steps it will get
+    assert html.count("class='node pending") == 24  # the line: the steps it will get
+    assert "href='/jobs/1/planned/2'" in html  # each opens its sheet, by position until the job starts
+    assert "Coming up" in html and "Starts <time" in html  # when, in words
     assert "Sign in" in html and "/act" not in html  # no controls signed out
-    assert page.get("/?part=lanes").text.startswith("<section class=queue>")  # what the page refreshes with
+    assert page.get("/?part=lanes").text.startswith("<section class=agenda>")  # what the page refreshes with
 
 
 def test_the_running_step_shows_its_live_tail_without_secrets(office, page):
@@ -101,7 +103,7 @@ def test_signing_in(office, page):
     assert r.status_code == 303 and r.headers["location"] == "/?msg=Wrong%20password." and COOKIE not in r.cookies
     sign_in(page)
     html = page.get("/").text
-    assert "Sign out" in html and "Pause all work" in html and "Run next" in html
+    assert "Sign out" in html and "Pause all" in html and "Run last" in html
     cookie = page.cookies[COOKIE]
     page.post("/logout", follow_redirects=False)
     assert "Sign in" in page.get("/").text
@@ -151,15 +153,16 @@ def test_skipping_only_optional_steps_that_have_not_started(office, page):
     job = page.job
     start(office, job, "buildout")
     review, buildout = by_name(office, job, "review"), by_name(office, job, "buildout")
-    html = page.get("/").text
-    assert html.count(">Skip</button>") == 2  # review and docs; not buildout or office's shipping
+    assert page.get(f"/jobs/{job.id}").text.count(">Skip</button>") == 2  # review and docs; not buildout or shipping
+    assert ">Skip</button>" in page.get(f"/steps/{review.id}?part=sheet").text
+    assert ">Skip</button>" not in page.get(f"/steps/{buildout.id}?part=sheet").text
     assert "Skipped%20review." in act(page, action="skip", job=job.id, step=review.id)
     assert office.store.step(review.id).state == "skipped"
     assert office.chat.sent == []  # the project has no room in this test
     assert "can%27t%20be%20skipped" in act(page, action="skip", job=job.id, step=buildout.id)
     deploy = [s for s in office.store.steps(job.id) if s.kind == "deploy"][-1]
     assert "can%27t%20be%20skipped" in act(page, action="skip", job=job.id, step=deploy.id)
-    assert "Undo skip" in page.get("/").text
+    assert "Undo skip" in page.get(f"/steps/{review.id}?part=sheet").text
     assert "Put%20review%20back." in act(page, action="restore", job=job.id, step=review.id)
     assert office.store.step(review.id).state == "pending"
 
@@ -207,17 +210,20 @@ def test_queue_order_settings_notes_pause_and_stop(office, page):
     birds = office.store.add_job("birds", "new", "birds", "standard")
     trees = page.job
     html = page.get("/").text
-    assert html.index("<b>1</b> Trees") < html.index("<b>2</b> Birds")
+    assert html.index('id="p-trees"') < html.index('id="p-birds"') and html.count(">Run next</button>") == 1
+    assert "Run Birds next" in page.get(f"/jobs/{birds.id}/planned/2?part=sheet").text
     act(page, action="move", job=birds.id, value="first")
     assert office.store.next_job(at="9999").id == birds.id
     html = page.get("/").text
-    assert html.index("<b>1</b> Birds") < html.index("<b>2</b> Trees")
+    assert html.index('id="p-birds"') < html.index('id="p-trees"')
     act(page, action="move", job=birds.id, value="last")
     assert office.store.next_job(at="9999").id == trees.id
 
     act(page, action="setting", slug="trees", name="model", value="sonnet")
     assert office.store.project("trees").model == "sonnet"
     assert "can%27t%20be%20gpt" in act(page, action="setting", slug="trees", name="model", value="gpt")
+    act(page, action="setting", slug="trees", name="model", value="")
+    assert office.store.project("trees").model == ""  # back to each step's default
 
     office.store.update_job(trees.id, state="waiting")
     assert "Picking%20the%20job%20back%20up" in act(page, action="note", job=trees.id, value="use oak first")
@@ -239,6 +245,77 @@ def test_job_page(office, page):
     html = page.get(f"/jobs/{page.job.id}").text
     assert "bin/watch.sh 1" in html and "8 steps done" in html and " open>" in html
     assert page.get("/jobs/99").status_code == 404
+    assert page.get("/steps/999").status_code == 404 and page.get("/jobs/1/planned/99").status_code == 404
+
+
+def test_a_step_before_it_starts_can_get_its_own_model_effort_and_context(office, page):
+    sign_in(page)
+    job = page.job
+    assert office.store.steps(job.id) == []  # not started: its steps are planned, not stored
+    html = page.get(f"/jobs/{job.id}/planned/2?part=sheet").text  # spec
+    assert "Runs on</dt><dd>opus/high" in html and "default: opus" in html
+    act(page, action="step-setting", job=job.id, position=2, name="model", value="haiku")
+    spec = by_name(office, job, "spec")  # the job's steps are stored now
+    assert spec.model == "haiku" and len(office.store.steps(job.id)) == 24
+    act(page, action="step-setting", job=job.id, step=spec.id, name="effort", value="low")
+    html = page.get(f"/steps/{spec.id}?part=sheet").text
+    assert "haiku/low" in html and "model from this step" in html
+    assert "spec%20gets%20that" in act(page, action="note", job=job.id, step=spec.id, value="keep it to one page")
+    assert "keep it to one page" in page.get(f"/steps/{spec.id}?part=sheet").text
+    assert office.store.pending_notes(job.id) == []  # not for whichever step is next
+    act(page, action="step-setting", job=job.id, step=spec.id, name="model", value="")
+    assert office.store.step(spec.id).model is None
+
+    office.store.update_step(spec.id, started_at="2026-10-23T10:00:00+00:00")
+    assert "haven%27t%20started" in act(page, action="step-setting", job=job.id, step=spec.id, name="model", value="opus")
+    assert "has%20started" in act(page, action="note", job=job.id, step=spec.id, value="too late")
+
+
+def test_step_context_and_settings_reach_only_that_step(office):
+    async def go():
+        from test_flow import new_project, verdict
+
+        await new_project(office, [verdict("done")] * 4)
+        job = office.store.jobs()[0]
+        control = Control(office.store, office.scheduler)
+        office.scheduler.ensure_steps(job)
+        scaffold = by_name(office, job, "scaffold")
+        await control.note(job.id, "use plain CSS", scaffold.id)
+        await control.step_setting(job.id, scaffold.id, 0, "model", "sonnet")
+        office.store.set_default("spec", "effort", "low")
+        await office.until("PR")
+        spec_call, scaffold_call = office.harness.calls[-2:]
+        assert (spec_call.model, spec_call.effort) == ("opus", "low") and "use plain CSS" not in spec_call.prompt
+        assert (scaffold_call.model, scaffold_call.effort) == ("sonnet", "high") and "use plain CSS" in scaffold_call.prompt
+        assert [r["model"] for r in office.store.runs(job.id)] == ["opus/low", "sonnet/high"]
+
+    asyncio.run(go())
+
+
+def test_insights_and_defaults(office, page):
+    job = page.job
+    start(office, job, "mvp")
+    spec = by_name(office, job, "spec")
+    run = office.store.start_run(job.id, "spec", "opus/high", "/nowhere", spec.id)
+    office.store.finish_run(run, "verdict", cost_usd=1.5, input_tokens=900_000, output_tokens=10_000)
+    office.store.db.execute("UPDATE runs SET started_at = '2020-01-01T10:00:00+00:00', ended_at = '2020-01-01T10:20:00+00:00'")
+    office.store.db.execute(
+        "UPDATE steps SET started_at = '2020-01-01T10:00:00+00:00', ended_at = '2020-01-01T10:05:00+00:00' WHERE started_at IS NOT NULL"
+    )
+    html = page.get("/insights?days=all").text
+    assert "Where the time goes" in html and "$1.50" in html and "910k" in html
+    assert "The spec steps use 100% of the Claude usage" in html
+    assert "spec</b> <span class=muted>20m a step · $1.50 a step" in html
+    assert "Sign in to change them" in html and "/act" not in html.split("id=defaults")[1]
+    assert "Nothing has run" in page.get("/insights?days=7").text  # those runs were a while ago
+
+    sign_in(page)
+    assert "Every%20docs%20step" in act(page, action="default", kind="docs", name="model", value="haiku")
+    assert office.store.defaults()["docs"] == ("haiku", "")
+    assert "No%20kind%20of%20step" in act(page, action="default", kind="nope", name="model", value="haiku")
+    act(page, action="default", kind="*", name="effort", value="medium")
+    docs = by_name(office, job, "docs")
+    assert "haiku/medium" in page.get(f"/steps/{docs.id}?part=sheet").text
 
 
 def test_public_view_keeps_what_it_is_doing_but_not_how():

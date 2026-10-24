@@ -165,12 +165,21 @@ that was running starts again; office's own steps pick up where they were.
 
 ## Checking on a job
 
-The status page (https://office.unlaunched.dev) has a lane per project: what's
-done, with links to the PRs, commits, CI runs and site; what's running, with a
-live tail; and what comes next. `/jobs/<n>` shows one job. Signed in (the
-`OFFICE_WEB_PASSWORD` in `.env`, default `supi`), it can skip optional steps,
-reorder the queue, pause, stop and send notes. Anyone can see the page, so set
-your own password: the default is easy to guess.
+The status page (https://office.unlaunched.dev) says what needs you and what's
+coming up when, then has a lane per project: the job as a line through its
+steps, each with a sheet (tap it) holding what it did with links to the PRs,
+commits, CI runs and site, its runs and transcript, or its live tail while it
+runs. `/jobs/<n>` shows one job as a list; `/insights` shows where the time and
+usage go and sets the default model and effort for each kind of step. Signed in
+(the `OFFICE_WEB_PASSWORD` in `.env`, default `supi`), it can skip optional
+steps, give a step its own model, effort or context, reorder the queue, pause,
+stop and send notes. Anyone can see the page, so set your own password: the
+default is easy to guess.
+
+The times in "Coming up" are estimates: the median of how long the last steps
+of each kind took, run one after another in queue order. Usage is what Claude
+Code reports a run would cost at API prices, the fair weight for how much of the
+Claude allowance it used.
 
 To follow an agent step as it works:
 
