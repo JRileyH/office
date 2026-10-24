@@ -58,12 +58,12 @@ def test_inbox_idea_becomes_a_project_with_its_own_room(office):
         assert (job.kind, job.playbook, job.state) == ("new", "standard", "parked")
         assert job.request == "a flashcard game for identifying northeastern us trees"
         [reply] = office.chat.texts(office.inbox)[1:]  # after the welcome
-        assert reply.startswith("New project: Tree Cards (tree-cards), mode standard, model opus, high effort.")
+        assert reply.startswith("New project: Tree Cards (tree-cards), mode standard, each step's default model and effort.")
         assert f"https://matrix.to/#/{room}" in reply
         [intro] = office.chat.texts(room)
         assert "A flashcard game for northeastern US trees." in intro
         assert "https://tree-cards.unlaunched.dev/" in intro
-        assert "Mode standard, model opus, high effort. Starting in a minute" in intro
+        assert "Mode standard, each step's default model and effort. Starting in a minute" in intro
         # Triage is a cheap structured call.
         triage = office.harness.calls[0]
         assert (triage.model, triage.label) == ("haiku", "intake")
@@ -623,7 +623,7 @@ def test_commands(office):
         assert office.chat.sent[-1] == (inbox, f"#{job.id} Tree Cards: new project, starting shortly, set up (1/24)", True)
 
         await office.say(room, "!status")
-        assert office.chat.texts(room)[-1].startswith("Tree Cards (tree-cards)\nMode standard, model opus, high effort\n#")
+        assert office.chat.texts(room)[-1].startswith("Tree Cards (tree-cards)\nMode standard, each step's default model and effort\n#")
 
         await office.say(room, "!pause")
         assert office.store.project("tree-cards").paused
@@ -697,8 +697,11 @@ def test_unspecified_settings_use_the_defaults(tmp_path):
         await office.bot.ensure_rooms()
         await office.say(office.inbox, "trees")
         project = office.store.project("tree-cards")
-        assert (project.mode, project.model, project.effort) == ("reckless", "sonnet", "xhigh")
+        assert (project.mode, project.model, project.effort) == ("reckless", "", "")  # each step's default
         assert office.store.active_job("tree-cards").playbook == "reckless"
+        await office.until("build")
+        await office.step()
+        assert (office.harness.calls[-1].model, office.harness.calls[-1].effort) == ("sonnet", "xhigh")
 
     run(go())
 
@@ -710,7 +713,8 @@ def test_settings_commands(office):
 
         await office.say(room, "!mode rigorous")
         assert office.chat.texts(room)[-1] == (
-            "Tree Cards: mode rigorous, model opus, high effort. The new-project job will follow the rigorous playbook."
+            "Tree Cards: mode rigorous, each step's default model and effort. "
+            "The new-project job will follow the rigorous playbook."
         )
         assert office.store.job(job.id).playbook == "rigorous"
 
@@ -718,7 +722,7 @@ def test_settings_commands(office):
         assert office.store.project("tree-cards").effort == "max"
         await office.say(room, "!model sonnet")
         await office.say(room, "!model gpt")
-        assert office.chat.texts(room)[-1] == "Usage: !model fable|opus|sonnet|haiku"
+        assert office.chat.texts(room)[-1] == "Usage: !model fable|opus|sonnet|haiku|default"
         await office.say(office.inbox, "!mode rigorous")
         assert office.chat.texts(office.inbox)[-1] == "Usage: !mode <project> reckless|standard|rigorous"
 
@@ -734,6 +738,9 @@ def test_settings_commands(office):
 
         await office.say(room, "!status")
         assert "Mode reckless, model sonnet, max effort" in office.chat.texts(room)[-1]
+        await office.say(room, "!model default")
+        assert office.store.project("tree-cards").model == ""
+        assert "mode reckless, each step's default model, max effort" in office.chat.texts(room)[-1]
 
     run(go())
 

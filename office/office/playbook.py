@@ -23,7 +23,7 @@ Every other step is office's own code (CODE_STEPS), so pushing, pull requests, C
 merging, deploying and telling Riggy happen the same way every time. `modes` limits a
 step to projects in those modes; `optional` lets Riggy skip it from the status page
 (a review, say, but never the work itself or office's push-to-deploy steps). The model
-and effort come from the project.
+and effort are chosen on the status page, per step, project or kind of step (plan.engine).
 """
 
 from __future__ import annotations

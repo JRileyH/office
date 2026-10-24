@@ -6,9 +6,11 @@ page and bin/watch.sh.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from . import playbook as playbooks
 from .config import Settings
-from .store import ACTIVE, OPEN, Job, Step, Store
+from .store import ACTIVE, OPEN, Job, Project, Step, Store
 
 # How office's own steps read in messages and on the status page.
 LABELS = {
@@ -51,6 +53,38 @@ def planned(settings: Settings, store: Store, job: Job) -> list[Step]:
         for s in steps[:resume]:
             s.state, s.summary = "done", LEGACY_DONE
     return steps
+
+
+@dataclass
+class Engine:
+    """The model and effort an agent step runs with, and where each came from."""
+
+    model: str
+    effort: str
+    model_from: str  # step | project | <step name> default | default | office
+    effort_from: str
+
+    def __str__(self) -> str:
+        return f"{self.model}/{self.effort}"
+
+
+def engine(settings: Settings, store: Store, project: Project, step: Step) -> Engine:
+    """The most specific choice wins: this step's, the project's, the default for steps like it
+    (by name: docs, spec, fix…), the default for every step, then OFFICE_MODEL and OFFICE_EFFORT."""
+    defaults = store.defaults()
+    named, every = defaults.get(step.name, ("", "")), defaults.get("*", ("", ""))
+    found = []
+    for i, fallback in enumerate((settings.default_model, settings.default_effort)):
+        choices = [
+            (step.model if i == 0 else step.effort, "this step"),
+            (project.model if i == 0 else project.effort, "the project"),
+            (named[i], f"the {step.name} default"),
+            (every[i], "the default"),
+            (fallback, "the default"),
+        ]
+        found.append(next((value, source) for value, source in choices if value))
+    (model, model_from), (effort, effort_from) = found
+    return Engine(model, effort, model_from, effort_from)
 
 
 def current(steps: list[Step]) -> Step | None:

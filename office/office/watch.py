@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import plan
 from .config import Settings
-from .store import ACTIVE, Job, Store
+from .store import ACTIVE, Job, Project, Store
 
 POLL_SECONDS = 2
 STILL_SECONDS = 120  # quiet this long: say what the worker is on
@@ -156,7 +156,7 @@ def job_line(settings: Settings, store: Store, job: Job, now: datetime) -> str:
             state = f"retrying {when} (last run: {last['outcome']})" if last else f"starting {when}"
     held = ", project paused" if project.paused else ""
     return (
-        f"#{job.id} {project.name} ({job.slug}): {job.kind}, {job.playbook}, {project.model}/{project.effort}."
+        f"#{job.id} {project.name} ({job.slug}): {job.kind}, {job.playbook}{_engine(project)}."
         f" {plan.where(steps)}: {_short(state, 200)}{held}"
     )
 
@@ -391,3 +391,10 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
+
+
+def _engine(project: Project) -> str:
+    """The project's model and effort, if it names them; otherwise each step has its own."""
+    if not project.model and not project.effort:
+        return ""
+    return f", {project.model or 'default'}/{project.effort or 'default'}"

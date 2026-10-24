@@ -399,8 +399,37 @@ def test_older_databases_get_new_columns(tmp_path):
     db.execute("INSERT INTO projects (slug, name, summary, created_at) VALUES ('hey', 'Hey', 's', 'now')")
     db.commit()
     db.close()
-    project = Store(tmp_path / "old.db").project("hey")
-    assert (project.model, project.effort) == ("opus", "high")
+    db = sqlite3.connect(tmp_path / "old.db")
+    db.execute("ALTER TABLE projects ADD COLUMN model TEXT NOT NULL DEFAULT 'opus'")
+    db.execute("ALTER TABLE projects ADD COLUMN effort TEXT NOT NULL DEFAULT 'high'")
+    db.execute("INSERT INTO projects (slug, name, summary, effort, created_at) VALUES ('max', 'Max', 's', 'max', 'now')")
+    db.commit()
+    db.close()
+    store = Store(tmp_path / "old.db")
+    # Projects that named the old defaults now take each step's default; other choices stay.
+    assert (store.project("hey").model, store.project("hey").effort) == ("", "")
+    assert (store.project("max").model, store.project("max").effort) == ("", "max")
+    store.update_project("hey", model="opus")
+    assert Store(tmp_path / "old.db").project("hey").model == "opus"  # only once
+
+
+def test_the_most_specific_model_and_effort_win(office):
+    from office.plan import engine
+
+    store = office.store
+    project = store.add_project("trees", "Trees", "s")
+    docs = Step(1, 1, 1, "agent", "docs")
+    assert str(engine(office.settings, store, project, docs)) == "opus/high"  # OFFICE_MODEL, OFFICE_EFFORT
+    store.set_default("*", "effort", "medium")
+    store.set_default("docs", "model", "haiku")
+    e = engine(office.settings, store, project, docs)
+    assert (str(e), e.model_from, e.effort_from) == ("haiku/medium", "the docs default", "the default")
+    assert str(engine(office.settings, store, project, Step(2, 1, 2, "agent", "spec"))) == "opus/medium"
+    project = store.update_project("trees", effort="max")
+    assert str(engine(office.settings, store, project, docs)) == "haiku/max"
+    docs.model, docs.effort = "sonnet", "low"
+    e = engine(office.settings, store, project, docs)
+    assert (str(e), e.model_from, e.effort_from) == ("sonnet/low", "this step", "this step")
 
 
 # --- office's own git steps, on a real repo ---------------------------------------

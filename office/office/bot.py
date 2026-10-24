@@ -29,8 +29,8 @@ HELP = """Commands (in a project's room they apply to that project; elsewhere, p
 !queue — what's queued, running and waiting
 !status [project] — a project's state, settings and links
 !mode reckless|standard|rigorous — how carefully it's built
-!model fable|opus|sonnet|haiku — which Claude model the workers use
-!effort low|medium|high|xhigh|max — how hard they think
+!model fable|opus|sonnet|haiku|default — the Claude model for all its steps, or each step's default
+!effort low|medium|high|xhigh|max|default — how hard they think
 !rename <name> — change the project's name
 !slug <new-slug> — move it to a new address and repo
 !pause / !resume — hold a project while you tinker; with no project in the inbox, all work
@@ -38,11 +38,12 @@ HELP = """Commands (in a project's room they apply to that project; elsewhere, p
 !delete — delete a project for good: site, data, checkout, history and room (asks you to confirm)
 
 In the inbox you can also say the settings when you dictate ("rigorous, opus, max effort").
+Each kind of step has a default model and effort, set on the status page's insights.
 Anything else: in the inbox, a new idea; in a project's room, feedback or a change."""
 
 STARTING = "Starting now."
 INBOX_WELCOME = """This is office's inbox. Dictate an idea here and I'll turn it into a project with its own room, where I'll post check-ins and you can ask for changes. !help lists commands."""
-SETTINGS = {"mode": MODES, "model": MODELS, "effort": EFFORTS}
+SETTINGS = {"mode": MODES, "model": (*MODELS, "default"), "effort": (*EFFORTS, "default")}
 
 
 class Bot:
@@ -107,8 +108,8 @@ class Bot:
                 brief.name,
                 brief.summary,
                 mode=mode,
-                model=brief.model or self.settings.default_model,
-                effort=brief.effort or self.settings.default_effort,
+                model=brief.model or "",  # unless named, each step's default
+                effort=brief.effort or "",
             )
             url, repo = self.settings.project_url(slug), self.settings.repo_url(slug)
             room = await self.chat.create_room(brief.name, f"{url} · {repo}", alias=slug)
@@ -291,7 +292,7 @@ class Bot:
             where = "" if here else " <project>"
             return f"Usage: !{setting}{where} {'|'.join(allowed)}"
         value = rest[0].lower()
-        project = self.store.update_project(project.slug, **{setting: value})
+        project = self.store.update_project(project.slug, **{setting: "" if value == "default" else value})
         reply = f"{project.name}: {settings_line(project).lower()}."
         job = self.store.active_job(project.slug)
         if setting == "mode" and job and self.store.steps(job.id):
@@ -372,4 +373,8 @@ class Bot:
 
 
 def settings_line(project: Project) -> str:
-    return f"Mode {project.mode}, model {project.model}, {project.effort} effort"
+    if not project.model and not project.effort:
+        return f"Mode {project.mode}, each step's default model and effort"
+    model = f"model {project.model}" if project.model else "each step's default model"
+    effort = f"{project.effort} effort" if project.effort else "default effort"
+    return f"Mode {project.mode}, {model}, {effort}"

@@ -266,7 +266,7 @@ class Scheduler:
         """One headless run that does the step's work on the job's branch and commits it."""
         branch = self.branch(job)
         await self.workspace.start_branch(project.slug, branch)
-        notes = self.store.pending_notes(job.id)
+        notes = self.store.pending_notes(job.id, step.id)
         feedback = [text for _, text in notes]
         if job.resume_session:
             prompt, resume = self.prompts.resume(feedback), job.resume_session
@@ -315,18 +315,19 @@ class Scheduler:
         resume: str | None,
         schema: dict | None = None,
     ) -> RunResult:
-        """One run of the step, with the project's current model and effort."""
+        """One run of the step, with the model and effort chosen for it as it starts (plan.engine)."""
         project = self.store.project(project.slug)
+        engine = plan.engine(self.settings, self.store, project, self.store.step(step.id) or step)
         log_path = self.settings.job_logs(job.id) / f"{len(self.store.runs(job.id)) + 1:03d}-{label}.jsonl.gz"
-        run_id = self.store.start_run(job.id, label, f"{project.model}/{project.effort}", str(log_path), step.id)
+        run_id = self.store.start_run(job.id, label, str(engine), str(log_path), step.id)
         notes = self.progress_path(job)
         seen = notes.stat().st_size if notes.exists() else 0  # notes from earlier steps were passed on then
         run = asyncio.create_task(
             self.harness.run(
                 cwd=self.workspace.path(project.slug),
                 prompt=prompt,
-                model=project.model,
-                effort=project.effort,
+                model=engine.model,
+                effort=engine.effort,
                 max_turns=max_turns,
                 log_path=log_path,
                 env=self.worker_env(project, job),

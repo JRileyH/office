@@ -82,7 +82,16 @@ CREATE TABLE IF NOT EXISTS steps (
     error TEXT,                      -- why the last attempt failed
     links TEXT NOT NULL DEFAULT '{}',  -- JSON {label: url}: the PR, commit, CI run, site
     started_at TEXT,
-    ended_at TEXT
+    ended_at TEXT,
+    model TEXT,                      -- Riggy's choice for this step, over the defaults
+    effort TEXT
+);
+-- The model and effort for each kind of agent step (its name: spec, docs, fix…), set on
+-- the status page. Empty means not set here. The name '*' is every other kind.
+CREATE TABLE IF NOT EXISTS defaults (
+    name TEXT PRIMARY KEY,
+    model TEXT NOT NULL DEFAULT '',
+    effort TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -93,7 +102,8 @@ MIGRATIONS = {
         "effort": "TEXT NOT NULL DEFAULT 'high'",
     },
     "runs": {"step_id": "INTEGER"},
-    "steps": {"optional": "INTEGER NOT NULL DEFAULT 0"},
+    "steps": {"optional": "INTEGER NOT NULL DEFAULT 0", "model": "TEXT", "effort": "TEXT"},
+    "notes": {"step_id": "INTEGER"},  # a note for one step rather than the next
 }
 
 # Jobs in these states hold or want the worker slot, or wait on Riggy; anything else is finished.
@@ -119,7 +129,7 @@ class Project:
     name: str
     summary: str
     mode: str
-    model: str
+    model: str  # "" for each step's default (plan.engine)
     effort: str
     room_id: str | None
     paused: bool
@@ -160,6 +170,8 @@ class Step:
     links: dict[str, str] = field(default_factory=dict)
     started_at: str | None = None
     ended_at: str | None = None
+    model: str | None = None  # Riggy's choice for this step; None for the defaults
+    effort: str | None = None
 
 
 class Store:
@@ -174,6 +186,12 @@ class Store:
             for column, decl in columns.items():
                 if column not in have:
                     self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        if self.get("project_engines") is None:
+            # Projects used to always name a model and effort, opus and high unless Riggy said
+            # otherwise. Those now come from each step's defaults, which start out the same.
+            self.db.execute("UPDATE projects SET model = '' WHERE model = 'opus'")
+            self.db.execute("UPDATE projects SET effort = '' WHERE effort = 'high'")
+            self.put("project_engines", "1")
 
     # --- kv -------------------------------------------------------------------
 
@@ -190,7 +208,7 @@ class Store:
     # --- projects -------------------------------------------------------------
 
     def add_project(
-        self, slug: str, name: str, summary: str, mode: str = "standard", model: str = "opus", effort: str = "high"
+        self, slug: str, name: str, summary: str, mode: str = "standard", model: str = "", effort: str = ""
     ) -> Project:
         self.db.execute(
             "INSERT INTO projects (slug, name, summary, mode, model, effort, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -306,12 +324,22 @@ class Store:
 
     # --- notes ----------------------------------------------------------------
 
-    def add_note(self, job_id: int, text: str) -> None:
-        self.db.execute("INSERT INTO notes (job_id, text, created_at) VALUES (?, ?, ?)", (job_id, text, now()))
+    def add_note(self, job_id: int, text: str, step_id: int | None = None) -> None:
+        self.db.execute(
+            "INSERT INTO notes (job_id, text, created_at, step_id) VALUES (?, ?, ?, ?)", (job_id, text, now(), step_id)
+        )
 
-    def pending_notes(self, job_id: int) -> list[tuple[int, str]]:
-        rows = self.db.execute("SELECT id, text FROM notes WHERE job_id = ? AND consumed = 0 ORDER BY id", (job_id,))
+    def pending_notes(self, job_id: int, step_id: int | None = None) -> list[tuple[int, str]]:
+        """Notes not yet passed on: those for whichever step is next, and those for `step_id`."""
+        rows = self.db.execute(
+            "SELECT id, text FROM notes WHERE job_id = ? AND consumed = 0 AND (step_id IS NULL OR step_id = ?) ORDER BY id",
+            (job_id, step_id),
+        )
         return [(r["id"], r["text"]) for r in rows]
+
+    def step_notes(self, step_id: int) -> list[str]:
+        rows = self.db.execute("SELECT text FROM notes WHERE step_id = ? ORDER BY id", (step_id,))
+        return [r["text"] for r in rows]
 
     def consume_notes(self, ids: list[int]) -> None:
         self.db.executemany("UPDATE notes SET consumed = 1 WHERE id = ?", [(i,) for i in ids])
@@ -351,6 +379,19 @@ class Store:
         self.db.execute(f"UPDATE steps SET {columns} WHERE id = ?", (*fields.values(), step_id))
         return self.step(step_id)
 
+    # --- defaults -------------------------------------------------------------
+
+    def defaults(self) -> dict[str, tuple[str, str]]:
+        """{step name: (model, effort)}, "" where not set."""
+        return {r["name"]: (r["model"], r["effort"]) for r in self.db.execute("SELECT * FROM defaults")}
+
+    def set_default(self, name: str, field: str, value: str) -> None:
+        assert field in ("model", "effort"), field
+        self.db.execute(
+            f"INSERT INTO defaults (name, {field}) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET {field} = excluded.{field}",
+            (name, value),
+        )
+
     # --- runs -----------------------------------------------------------------
 
     def start_run(self, job_id: int, phase: str, model: str, log_path: str, step_id: int | None = None) -> int:
@@ -369,6 +410,30 @@ class Store:
         row = self.db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return dict(row) if row else None
 
+    def finished_runs(self, since: str = "") -> list[dict]:
+        """Runs that ended, started at or after `since`, with their project and step."""
+        rows = self.db.execute(
+            "SELECT runs.*, jobs.slug, steps.name AS step_name FROM runs JOIN jobs ON jobs.id = runs.job_id"
+            " LEFT JOIN steps ON steps.id = runs.step_id WHERE runs.ended_at IS NOT NULL AND runs.started_at >= ?"
+            " ORDER BY runs.id",
+            (since,),
+        )
+        return [dict(r) for r in rows]
+
+    def finished_steps(self, since: str = "") -> list[tuple[Step, str]]:
+        """Steps that ran and ended at or after `since`, with their project's slug."""
+        rows = self.db.execute(
+            "SELECT steps.*, jobs.slug FROM steps JOIN jobs ON jobs.id = steps.job_id"
+            " WHERE steps.started_at IS NOT NULL AND steps.ended_at >= ? ORDER BY steps.ended_at",
+            (since,),
+        )
+        found = []
+        for r in rows:
+            data = dict(r)
+            slug = data.pop("slug")
+            found.append((_step(data), slug))
+        return found
+
     def runs(self, job_id: int | None = None, limit: int = 50) -> list[dict]:
         if job_id is None:
             rows = self.db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))
@@ -377,7 +442,7 @@ class Store:
         return [dict(r) for r in rows]
 
 
-def _step(row: sqlite3.Row) -> Step:
+def _step(row: sqlite3.Row | dict) -> Step:
     data = dict(row)
     data["links"] = json.loads(data["links"] or "{}")
     data["optional"] = bool(data["optional"])

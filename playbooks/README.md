@@ -5,8 +5,9 @@ job starts. Front matter lists the steps; each `## <name>` section is an agent
 step's instructions. Every other step is office's own code: `setup`, `push`,
 `pr`, `checks`, `merge`, `push-main`, `deploy`, `checkin`, `alert`. Every
 playbook starts with `setup` and ends with `deploy, alert` (the loader refuses
-anything else). The model and effort come from the project. Baked read-only into
-the office image.
+anything else). The model and effort are chosen on the status page: for a kind of
+step (all `docs` steps, say), a project, or one step. Baked read-only into the
+office image.
 
 - `reckless.md`, `standard.md`, `rigorous.md`: new projects, by mode.
 - `feature.md`: changes Riggy asks for in a project's room (steps can be limited

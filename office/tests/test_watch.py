@@ -215,12 +215,12 @@ def test_watch_shows_runs_that_end_between_looks(office):
     out = []
     follow(office.settings, store, out.append, sleep=fails_fast, clock=lambda: T0)
     assert out == [
-        "#1 Trees (trees): new, standard, opus/high. set up (1/24): starting in 30s",
+        "#1 Trees (trees): new, standard. set up (1/24): starting in 30s",
         "",
         "── job 1 run 001-spec on opus/high, started 2026-10-22 13:30 UTC: error after 3s",
         "          ■ error",
         "",
-        "#1 Trees (trees): new, standard, opus/high. spec (2/24): retrying in 20m (last run: error)",
+        "#1 Trees (trees): new, standard. spec (2/24): retrying in 20m (last run: error)",
     ]
 
 
@@ -262,9 +262,9 @@ def test_overview_says_why_jobs_wait(office):
     store.put("scheduler_paused", "1")
     assert overview(office.settings, store, T0) == [
         "Work is paused: !resume in the inbox starts it again.",
-        "#1 A (a): new, standard, opus/high. set up (1/24): waiting on you: reply in its room",
-        "#2 B (b): change, standard, opus/high. spec (2/24): retrying in 23m (last run: limit)",
-        "#3 C (c): new, standard, opus/high. set up (1/24): starting in 40s, project paused",
+        "#1 A (a): new, standard. set up (1/24): waiting on you: reply in its room",
+        "#2 B (b): change, standard. spec (2/24): retrying in 23m (last run: limit)",
+        "#3 C (c): new, standard. set up (1/24): starting in 40s, project paused",
     ]
     assert not expecting(store, T0)
     store.put("scheduler_paused", "0")
